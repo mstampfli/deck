@@ -242,19 +242,39 @@ fn summary_renders_for_humans_and_agents() {
 }
 
 #[test]
-fn capabilities_manifest_lists_the_full_surface() {
+fn json_help_emits_the_generated_manifest() {
     let state = tempfile::tempdir().unwrap();
 
-    let output = deck(state.path(), &["capabilities"]);
+    let output = deck(state.path(), &["--json", "--help"]);
     assert_success(&output);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
     assert_eq!(json["name"], "deck");
     assert_eq!(json["json"]["flag"], "--json");
     let commands = json["commands"].as_object().unwrap();
-    for expected in ["summary", "config_add_command", "run", "sandbox_run"] {
+    for expected in [
+        "summary",
+        "config_add_command",
+        "run",
+        "sandbox_run",
+        "ssh_hosts",
+    ] {
         assert!(commands.contains_key(expected), "missing {expected}");
     }
+    assert_eq!(commands["run"]["argv"][2], "PROJECT");
+    assert_eq!(commands["run"]["output"], "RunJson or CommandPlan");
+}
+
+#[test]
+fn text_help_is_untouched_and_never_wrapped_in_an_envelope() {
+    let state = tempfile::tempdir().unwrap();
+
+    let output = deck(state.path(), &["--help"]);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("terminal cockpit"), "{stdout}");
+    assert!(stdout.contains("deck --json --help"), "{stdout}");
+    assert!(!stdout.contains("\"ok\""), "{stdout}");
 }
 
 #[test]

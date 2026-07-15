@@ -5,7 +5,6 @@
 //! See `docs/ARCHITECTURE.md` for the full module map and extension rules.
 
 mod adapters;
-mod capabilities;
 mod cli;
 mod commands;
 mod config;
@@ -15,6 +14,7 @@ mod contracts;
 mod discover;
 mod errors;
 mod history;
+mod manifest;
 mod model;
 mod planner;
 mod plugin;

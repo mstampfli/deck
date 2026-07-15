@@ -24,8 +24,9 @@ use crate::state::{State, state_paths};
 #[derive(Debug, Parser)]
 #[command(
     name = "deck",
+    version,
     about = "A terminal cockpit for existing dev tools",
-    after_help = "Start with:\n  deck scan ~             index your projects\n  deck summary PROJECT    one-screen project overview\n\nAgents: every command accepts --json; run 'deck capabilities' for a\nmachine-readable manifest of the full surface."
+    after_help = "Start with:\n  deck scan ~             index your projects\n  deck summary PROJECT    one-screen project overview\n\nAgents: every command accepts --json; run 'deck --json --help' for a\nmachine-readable manifest of the full surface."
 )]
 pub struct Args {
     /// Print structured JSON instead of human-readable text.
@@ -138,8 +139,6 @@ enum Command {
         #[command(subcommand)]
         action: ConfigCommand,
     },
-    /// Print the machine-readable command manifest for agents (always JSON)
-    Capabilities,
     /// Open the interactive terminal UI (the default when no command is given)
     Tui,
     /// Write a starter deck.toml in the current directory
@@ -205,14 +204,21 @@ enum PluginCommand {
 pub fn run() -> Result<()> {
     let args = match Args::try_parse() {
         Ok(args) => args,
-        Err(err) => {
-            if raw_args_want_json_error() {
+        Err(err) => match err.kind() {
+            clap::error::ErrorKind::DisplayHelp if raw_args_want_json_error() => {
+                crate::manifest::print_manifest()?;
+                return Ok(());
+            }
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+                err.exit()
+            }
+            _ if raw_args_want_json_error() => {
                 let code = err.exit_code();
                 print_error_json("cli_parse_error", err.to_string())?;
                 std::process::exit(code);
             }
-            err.exit();
-        }
+            _ => err.exit(),
+        },
     };
     let json = args.json;
     let command = args.command.unwrap_or(Command::Tui);
@@ -275,7 +281,6 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
             dry_run,
         } => crate::history::rerun(project.as_deref(), command.as_deref(), json, dry_run),
         Command::Config { action } => crate::config_edit::run(action, json),
-        Command::Capabilities => crate::capabilities::capabilities(),
         Command::Tui => {
             if json {
                 anyhow::bail!("the TUI is interactive and has no JSON output");
