@@ -21,6 +21,9 @@ argv = ["printf", "hello"]
 [commands.shell]
 cmd = "printf hello"
 
+[commands.fail]
+argv = ["false"]
+
 [sandbox.locked]
 backend = "bwrap"
 network = false
@@ -58,8 +61,15 @@ fn commands_json_includes_safety_metadata() {
     assert_success(&output);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
-    assert_eq!(json[0]["commands"][0]["safety"]["direct_argv"], true);
-    assert_eq!(json[0]["commands"][1]["safety"]["uses_shell"], true);
+    let commands = json[0]["commands"].as_array().unwrap();
+    let safety = |name: &str| {
+        &commands
+            .iter()
+            .find(|command| command["name"] == name)
+            .unwrap_or_else(|| panic!("missing command {name}"))["safety"]
+    };
+    assert_eq!(safety("hello")["direct_argv"], true);
+    assert_eq!(safety("shell")["uses_shell"], true);
 }
 
 #[test]
@@ -91,6 +101,82 @@ fn tasks_can_be_added_and_listed() {
 
     assert_eq!(json["tasks"][0]["name"], "ship");
     assert_eq!(json["tasks"][0]["status"], "doing");
+}
+
+#[test]
+fn task_edits_print_human_confirmations_by_default() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let output = deck(
+        state.path(),
+        &["tasks", "add", "fixture", "ship", "--title", "Ship it"],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.starts_with("add-task fixture: wrote "),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(!stdout.contains('{'), "expected no JSON: {stdout}");
+}
+
+#[test]
+fn failed_run_exits_nonzero_with_a_single_json_document() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let output = deck(state.path(), &["run", "fixture", "fail", "--json"]);
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["exit_code"], 1);
+}
+
+#[test]
+fn global_json_flag_wraps_errors_in_the_envelope() {
+    let state = tempfile::tempdir().unwrap();
+
+    let output = deck(state.path(), &["--json", "context", "missing"]);
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["kind"], "unknown_project");
+}
+
+#[test]
+fn every_list_surface_renders_both_forms() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let json_out = deck(state.path(), &["list", "--json"]);
+    assert_success(&json_out);
+    let json: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(json[0]["name"], "fixture");
+
+    let human_out = deck(state.path(), &["list"]);
+    assert_success(&human_out);
+    let stdout = String::from_utf8_lossy(&human_out.stdout);
+    assert!(stdout.contains("fixture"), "unexpected stdout: {stdout}");
+    assert!(!stdout.contains('{'), "expected no JSON: {stdout}");
 }
 
 #[test]

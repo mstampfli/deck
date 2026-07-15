@@ -1,8 +1,8 @@
-//! Human-facing CLI parsing and top-level command dispatch.
+//! CLI parsing and top-level command dispatch.
 //!
-//! This module owns argument parsing, JSON-error mode selection, and delegation
-//! to feature modules. Feature behavior should stay out of this file when a
-//! focused module can own it.
+//! This module owns argument parsing, the global `--json` flag, JSON-error
+//! selection, and delegation to feature modules. Feature behavior should stay
+//! out of this file when a focused module can own it.
 
 use std::path::PathBuf;
 
@@ -12,9 +12,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::agent::AgentCommand;
 use crate::config::write_default_deck_config;
 use crate::contracts::{
-    CommandView, ProjectCommands, ProjectPlugins, ProjectStatus, ProjectWorkflows,
-    print_error_json, print_json, project_ref,
+    ClearRunsJson, CommandView, InitJson, LogsJson, PluginRegistryJson, PluginRunJson,
+    ProcessActionJson, ProjectCommands, ProjectPlugins, ProjectStatus, ProjectWorkflows, ScanJson,
+    ToolOutputJson, emit, print_error_json, project_list_item, project_ref,
 };
+use crate::model::Project;
 use crate::process::{start_process, stop_process};
 use crate::selection::{load_projects, select_command, select_project, select_projects};
 use crate::state::{State, state_paths};
@@ -22,6 +24,9 @@ use crate::state::{State, state_paths};
 #[derive(Debug, Parser)]
 #[command(name = "deck", about = "A terminal cockpit for existing dev tools")]
 pub struct Args {
+    /// Print structured JSON instead of human-readable text.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -31,21 +36,14 @@ enum Command {
     Scan {
         roots: Vec<PathBuf>,
     },
-    List {
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     #[command(name = "commands")]
     ShowCommands {
         project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     Run {
         project: String,
         command: String,
-        #[arg(long)]
-        json: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -63,8 +61,6 @@ enum Command {
     },
     Ps {
         project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     Logs {
         project: String,
@@ -105,15 +101,11 @@ enum Command {
     },
     Context {
         project: String,
-        #[arg(long)]
-        json: bool,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
     Status {
         project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     Sandbox {
         #[command(subcommand)]
@@ -127,14 +119,10 @@ enum Command {
         project: Option<String>,
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
-        #[arg(long)]
-        json: bool,
     },
     Rerun {
         project: Option<String>,
         command: Option<String>,
-        #[arg(long)]
-        json: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -163,14 +151,10 @@ enum GhCommand {
 enum WorkflowCommand {
     List {
         project: String,
-        #[arg(long)]
-        json: bool,
     },
     Run {
         project: String,
         workflow: String,
-        #[arg(long)]
-        json: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -192,8 +176,6 @@ enum PluginCommand {
     },
     List {
         project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     Manifest {
         project: String,
@@ -226,9 +208,13 @@ pub fn run() -> Result<()> {
             err.exit();
         }
     };
+    let json = args.json;
     let command = args.command.unwrap_or(Command::Tui);
-    let json_errors = command_wants_json_errors(&command);
-    if let Err(err) = dispatch(command) {
+    let json_errors = json || matches!(command, Command::Agent { .. });
+    if let Err(err) = dispatch(command, json) {
+        if err.downcast_ref::<crate::errors::Reported>().is_some() {
+            std::process::exit(1);
+        }
         if json_errors {
             print_error_json(crate::errors::classify(&err).as_str(), err.to_string())?;
             std::process::exit(1);
@@ -238,146 +224,126 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn dispatch(command: Command) -> Result<()> {
+fn dispatch(command: Command, json: bool) -> Result<()> {
     match command {
-        Command::Scan { roots } => scan(&roots),
-        Command::List { json } => crate::commands::list(json),
-        Command::ShowCommands { project, json } => commands(project.as_deref(), json),
+        Command::Scan { roots } => scan(&roots, json),
+        Command::List => crate::commands::list(json),
+        Command::ShowCommands { project } => commands(project.as_deref(), json),
         Command::Run {
             project,
             command,
-            json,
             dry_run,
         } => crate::commands::run_project_command(&project, &command, json, dry_run),
-        Command::Start { project, command } => start_project_command(&project, &command),
-        Command::Stop { project, command } => stop_project_command(&project, &command),
-        Command::Restart { project, command } => restart_project_command(&project, &command),
-        Command::Ps { project, json } => crate::commands::ps(project.as_deref(), json),
-        Command::Logs { project, command } => logs(&project, &command),
-        Command::Git { project, action } => git_tool(&project, action),
-        Command::Docker { project } => docker_tool(project.as_deref()),
-        Command::Gh { project, action } => gh_tool(&project, action),
+        Command::Start { project, command } => start_project_command(&project, &command, json),
+        Command::Stop { project, command } => stop_project_command(&project, &command, json),
+        Command::Restart { project, command } => restart_project_command(&project, &command, json),
+        Command::Ps { project } => crate::commands::ps(project.as_deref(), json),
+        Command::Logs { project, command } => logs(&project, &command, json),
+        Command::Git { project, action } => git_tool(&project, action, json),
+        Command::Docker { project } => docker_tool(project.as_deref(), json),
+        Command::Gh { project, action } => gh_tool(&project, action, json),
         Command::Search {
             project,
             query,
             limit,
-        } => search_tool(&project, &query, limit),
-        Command::SshHosts => print_tool_output(crate::tools::ssh_hosts()),
-        Command::Journal { unit, lines } => {
-            print_tool_output(crate::tools::journal(unit.as_deref(), lines))
+        } => search_tool(&project, &query, limit, json),
+        Command::SshHosts => emit_tool("ssh-hosts", None, crate::tools::ssh_hosts(), json),
+        Command::Journal { unit, lines } => emit_tool(
+            "journal",
+            None,
+            crate::tools::journal(unit.as_deref(), lines),
+            json,
+        ),
+        Command::Workflow { action } => workflow(action, json),
+        Command::Plugin { action } => plugin(action, json),
+        Command::Context { project, output } => context(&project, json, output.as_ref()),
+        Command::Status { project } => status(project.as_deref(), json),
+        Command::Sandbox { action } => crate::sandbox::run(action, json),
+        Command::Tasks { action } => crate::tasks::run(action, json),
+        Command::Recent { project, limit } => {
+            crate::history::recent(project.as_deref(), limit, json)
         }
-        Command::Workflow { action } => workflow(action),
-        Command::Plugin { action } => plugin(action),
-        Command::Context {
-            project,
-            json,
-            output,
-        } => context(&project, json, output.as_ref()),
-        Command::Status { project, json } => status(project.as_deref(), json),
-        Command::Sandbox { action } => crate::sandbox::run(action),
-        Command::Tasks { action } => crate::tasks::run(action),
-        Command::Recent {
-            project,
-            limit,
-            json,
-        } => crate::history::recent(project.as_deref(), limit, json),
         Command::Rerun {
             project,
             command,
-            json,
             dry_run,
         } => crate::history::rerun(project.as_deref(), command.as_deref(), json, dry_run),
         Command::Agent { action } => crate::agent::run(action),
-        Command::Tui => crate::tui::run_tui(),
+        Command::Tui => {
+            if json {
+                anyhow::bail!("the TUI is interactive and has no JSON output");
+            }
+            crate::tui::run_tui()
+        }
         Command::Init => {
             let path = write_default_deck_config(&std::env::current_dir()?)?;
-            println!("wrote {}", path.display());
-            Ok(())
+            emit(&InitJson { ok: true, path }, json)
         }
         Command::ClearRuns => {
             let paths = state_paths()?;
             let mut state = State::load(&paths)?;
             state.clear_runs(&paths)?;
             state.save(&paths)?;
-            println!("cleared run history");
-            Ok(())
+            emit(&ClearRunsJson { ok: true }, json)
         }
     }
 }
 
-fn scan(roots: &[PathBuf]) -> Result<()> {
+fn scan(roots: &[PathBuf], json: bool) -> Result<()> {
     let (projects, mut state, paths) = load_projects(roots)?;
     state.update_projects(&projects);
     state.save(&paths)?;
-    println!("found {} projects", projects.len());
-    for project in projects {
-        println!("{}  {}", project.id, project.root.display());
-    }
-    Ok(())
+    emit(
+        &ScanJson {
+            ok: true,
+            projects: projects.iter().map(project_list_item).collect(),
+        },
+        json,
+    )
 }
 
 fn commands(project_query: Option<&str>, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let selected = select_projects(&projects, project_query)?;
-    if json {
-        let output = selected
-            .iter()
-            .map(|project| ProjectCommands {
-                project: project_ref(project),
-                commands: project
-                    .commands
-                    .iter()
-                    .map(|command| CommandView {
-                        command,
-                        safety: crate::safety::command_safety(command),
-                    })
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
-        return print_json(&output);
-    }
-    for project in selected {
-        println!("{} ({})", project.name, project.root.display());
-        for command in &project.commands {
-            let marker = if command.available { " " } else { "!" };
-            println!(
-                "  {marker} {:<18} {:<10} {:<7} {:<5} {}",
-                command.name,
-                command.source.label(),
-                command.kind.label(),
-                if command.argv.is_some() {
-                    "argv"
-                } else {
-                    "shell"
-                },
-                command.command
-            );
-            if let Some(reason) = &command.unavailable_reason {
-                println!("    unavailable: {reason}");
-            }
-        }
-    }
-    Ok(())
+    let output = selected
+        .iter()
+        .map(|project| ProjectCommands {
+            project: project_ref(project),
+            commands: project
+                .commands
+                .iter()
+                .map(|command| CommandView {
+                    command,
+                    safety: crate::safety::command_safety(command),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    emit(&output, json)
 }
 
-fn start_project_command(project_query: &str, command_query: &str) -> Result<()> {
+fn start_project_command(project_query: &str, command_query: &str, json: bool) -> Result<()> {
     let (projects, mut state, paths) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     let command = select_command(project, command_query)?;
     let process = start_process(project, command, &state, &paths)?;
-    println!(
-        "started {} {} as pid {} log: {}",
-        project.name,
-        command.name,
-        process.pid,
-        process.log_path.display()
-    );
+    emit(
+        &ProcessActionJson {
+            ok: true,
+            action: "started",
+            project: &project.name,
+            command: &command.name,
+            pid: process.pid,
+            log_path: Some(&process.log_path),
+        },
+        json,
+    )?;
     state.record_process(process);
     state.save(&paths)?;
     Ok(())
 }
 
-fn stop_project_command(project_query: &str, command_query: &str) -> Result<()> {
+fn stop_project_command(project_query: &str, command_query: &str, json: bool) -> Result<()> {
     let (projects, mut state, paths) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     let process = state
@@ -386,14 +352,20 @@ fn stop_project_command(project_query: &str, command_query: &str) -> Result<()> 
     stop_process(&process)?;
     state.mark_process_stopped(&project.id, command_query);
     state.save(&paths)?;
-    println!(
-        "stopped {} {} pid {}",
-        project.name, command_query, process.pid
-    );
-    Ok(())
+    emit(
+        &ProcessActionJson {
+            ok: true,
+            action: "stopped",
+            project: &project.name,
+            command: command_query,
+            pid: process.pid,
+            log_path: None,
+        },
+        json,
+    )
 }
 
-fn restart_project_command(project_query: &str, command_query: &str) -> Result<()> {
+fn restart_project_command(project_query: &str, command_query: &str, json: bool) -> Result<()> {
     let (projects, mut state, paths) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     if let Some(process) = state.running_process_for(&project.id, command_query) {
@@ -402,19 +374,23 @@ fn restart_project_command(project_query: &str, command_query: &str) -> Result<(
     }
     let command = select_command(project, command_query)?;
     let process = start_process(project, command, &state, &paths)?;
-    println!(
-        "restarted {} {} as pid {} log: {}",
-        project.name,
-        command.name,
-        process.pid,
-        process.log_path.display()
-    );
+    emit(
+        &ProcessActionJson {
+            ok: true,
+            action: "restarted",
+            project: &project.name,
+            command: &command.name,
+            pid: process.pid,
+            log_path: Some(&process.log_path),
+        },
+        json,
+    )?;
     state.record_process(process);
     state.save(&paths)?;
     Ok(())
 }
 
-fn logs(project_query: &str, command_query: &str) -> Result<()> {
+fn logs(project_query: &str, command_query: &str, json: bool) -> Result<()> {
     let (projects, state, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     let process = state
@@ -430,13 +406,21 @@ fn logs(project_query: &str, command_query: &str) -> Result<()> {
                 .cloned()
         })
         .with_context(|| format!("{} has no process logs for {command_query:?}", project.name))?;
-    let raw = std::fs::read_to_string(&process.log_path)
+    let content = std::fs::read_to_string(&process.log_path)
         .with_context(|| format!("reading {}", process.log_path.display()))?;
-    print!("{raw}");
-    Ok(())
+    emit(
+        &LogsJson {
+            ok: true,
+            project: project_ref(project),
+            command: command_query,
+            log_path: &process.log_path,
+            content,
+        },
+        json,
+    )
 }
 
-fn git_tool(project_query: &str, action: GitCliAction) -> Result<()> {
+fn git_tool(project_query: &str, action: GitCliAction, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     let action = match action {
@@ -444,57 +428,78 @@ fn git_tool(project_query: &str, action: GitCliAction) -> Result<()> {
         GitCliAction::Branches => crate::tools::GitAction::Branches,
         GitCliAction::Commits => crate::tools::GitAction::Commits,
     };
-    print_tool_output(crate::tools::git(project, action))
+    emit_tool(
+        "git",
+        Some(project),
+        crate::tools::git(project, action),
+        json,
+    )
 }
 
-fn docker_tool(project_query: Option<&str>) -> Result<()> {
+fn docker_tool(project_query: Option<&str>, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let project = project_query
         .map(|query| select_project(&projects, query))
         .transpose()?;
-    print_tool_output(crate::tools::docker_ps(project))
+    emit_tool("docker", project, crate::tools::docker_ps(project), json)
 }
 
-fn gh_tool(project_query: &str, action: GhCommand) -> Result<()> {
+fn gh_tool(project_query: &str, action: GhCommand, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     match action {
-        GhCommand::Issues => print_tool_output(crate::tools::gh_issues(project)),
+        GhCommand::Issues => emit_tool("gh", Some(project), crate::tools::gh_issues(project), json),
     }
 }
 
-fn search_tool(project_query: &str, query: &str, limit: usize) -> Result<()> {
+fn search_tool(project_query: &str, query: &str, limit: usize, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
-    print_tool_output(crate::tools::search(project, query, limit))
+    emit_tool(
+        "search",
+        Some(project),
+        crate::tools::search(project, query, limit),
+        json,
+    )
 }
 
-fn print_tool_output(output: Result<String>) -> Result<()> {
-    print!("{}", output?);
-    Ok(())
+fn emit_tool(
+    tool: &'static str,
+    project: Option<&Project>,
+    output: Result<String>,
+    json: bool,
+) -> Result<()> {
+    emit(
+        &ToolOutputJson {
+            ok: true,
+            tool,
+            project: project.map(project_ref),
+            output: output?,
+        },
+        json,
+    )
 }
 
-fn workflow(action: WorkflowCommand) -> Result<()> {
+fn workflow(action: WorkflowCommand, json: bool) -> Result<()> {
     match action {
-        WorkflowCommand::List { project, json } => list_workflows(&project, json),
+        WorkflowCommand::List { project } => list_workflows(&project, json),
         WorkflowCommand::Run {
             project,
             workflow,
-            json,
             dry_run,
         } => crate::commands::run_workflow(&project, &workflow, json, dry_run),
     }
 }
 
-fn plugin(action: PluginCommand) -> Result<()> {
+fn plugin(action: PluginCommand, json: bool) -> Result<()> {
     match action {
-        PluginCommand::Add { name, cmd } => add_plugin(name, cmd),
+        PluginCommand::Add { name, cmd } => add_plugin(name, cmd, json),
         PluginCommand::AddPath { name, path } => {
             let cmd = crate::plugin::command_from_path(&path)?;
-            add_plugin(name, cmd)
+            add_plugin(name, cmd, json)
         }
-        PluginCommand::Remove { name } => remove_plugin(&name),
-        PluginCommand::List { project, json } => list_plugins(project.as_deref(), json),
+        PluginCommand::Remove { name } => remove_plugin(&name, json),
+        PluginCommand::List { project } => list_plugins(project.as_deref(), json),
         PluginCommand::Manifest { project, plugin } => plugin_manifest(&project, &plugin),
         PluginCommand::Panels { project, plugin } => plugin_panels(&project, &plugin),
         PluginCommand::Actions { project, plugin } => plugin_actions(&project, &plugin),
@@ -502,64 +507,57 @@ fn plugin(action: PluginCommand) -> Result<()> {
             project,
             plugin,
             action,
-        } => plugin_run(&project, &plugin, &action),
+        } => plugin_run(&project, &plugin, &action, json),
     }
 }
 
-fn add_plugin(name: String, cmd: String) -> Result<()> {
+fn add_plugin(name: String, cmd: String, json: bool) -> Result<()> {
     let paths = state_paths()?;
     let mut state = State::load(&paths)?;
     state.add_plugin(name.clone(), cmd.clone());
     state.save(&paths)?;
-    println!("registered plugin {name}: {cmd}");
-    Ok(())
+    emit(
+        &PluginRegistryJson {
+            ok: true,
+            action: "registered",
+            name: &name,
+            cmd: Some(&cmd),
+        },
+        json,
+    )
 }
 
-fn remove_plugin(name: &str) -> Result<()> {
+fn remove_plugin(name: &str, json: bool) -> Result<()> {
     let paths = state_paths()?;
     let mut state = State::load(&paths)?;
-    if state.remove_plugin(name).is_some() {
-        state.save(&paths)?;
-        println!("removed plugin {name}");
-    } else {
+    if state.remove_plugin(name).is_none() {
         anyhow::bail!("no global plugin named {name:?}");
     }
-    Ok(())
+    state.save(&paths)?;
+    emit(
+        &PluginRegistryJson {
+            ok: true,
+            action: "removed",
+            name,
+            cmd: None,
+        },
+        json,
+    )
 }
 
 fn list_plugins(project_query: Option<&str>, json: bool) -> Result<()> {
     let (projects, state, _) = load_projects(&[])?;
     if let Some(query) = project_query {
         let project = select_project(&projects, query)?;
-        if json {
-            return print_json(&ProjectPlugins {
+        return emit(
+            &ProjectPlugins {
                 project: project_ref(project),
                 plugins: &project.plugins,
-            });
-        }
-        println!("{} ({})", project.name, project.root.display());
-        for plugin in &project.plugins {
-            println!(
-                "  {:<18} {:<8} {}",
-                plugin.name,
-                plugin.source.label(),
-                plugin.cmd
-            );
-        }
-    } else {
-        if json {
-            return print_json(&state.global_plugins());
-        }
-        for plugin in state.global_plugins() {
-            println!(
-                "  {:<18} {:<8} {}",
-                plugin.name,
-                plugin.source.label(),
-                plugin.cmd
-            );
-        }
+            },
+            json,
+        );
     }
-    Ok(())
+    emit(&state.global_plugins(), json)
 }
 
 fn plugin_manifest(project_query: &str, plugin_query: &str) -> Result<()> {
@@ -589,12 +587,21 @@ fn plugin_actions(project_query: &str, plugin_query: &str) -> Result<()> {
     Ok(())
 }
 
-fn plugin_run(project_query: &str, plugin_query: &str, action: &str) -> Result<()> {
+fn plugin_run(project_query: &str, plugin_query: &str, action: &str, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
     let plugin = crate::plugin::select_plugin(project, plugin_query)?;
-    print!("{}", crate::plugin::run_action(plugin, project, action)?);
-    Ok(())
+    let output = crate::plugin::run_action(plugin, project, action)?;
+    emit(
+        &PluginRunJson {
+            ok: true,
+            project: project_ref(project),
+            plugin: &plugin.name,
+            action,
+            output,
+        },
+        json,
+    )
 }
 
 fn context(project_query: &str, json: bool, output: Option<&PathBuf>) -> Result<()> {
@@ -618,102 +625,27 @@ fn context(project_query: &str, json: bool, output: Option<&PathBuf>) -> Result<
 fn list_workflows(project_query: &str, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
-    if json {
-        return print_json(&ProjectWorkflows {
+    emit(
+        &ProjectWorkflows {
             project: project_ref(project),
             workflows: &project.workflows,
-        });
-    }
-    println!("{} ({})", project.name, project.root.display());
-    for workflow in &project.workflows {
-        println!("  {:<18} {}", workflow.name, workflow.steps.join(" -> "));
-    }
-    Ok(())
+        },
+        json,
+    )
 }
 
 fn status(project_query: Option<&str>, json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
     let selected = select_projects(&projects, project_query)?;
-    if json {
-        let output = selected
-            .iter()
-            .map(|project| ProjectStatus {
-                project: project_ref(project),
-                git: &project.git,
-                process_count: project.processes.len(),
-            })
-            .collect::<Vec<_>>();
-        return print_json(&output);
-    }
-    for project in selected {
-        let git = project
-            .git
-            .as_ref()
-            .map_or("no git status".to_string(), |git| {
-                format!(
-                    "{} changed={} ahead={} behind={}",
-                    git.branch, git.changed, git.ahead, git.behind
-                )
-            });
-        let process_count = project.processes.len();
-        println!(
-            "{:<24} {:<45} processes={}",
-            project.name, git, process_count
-        );
-    }
-    Ok(())
-}
-
-fn command_wants_json_errors(command: &Command) -> bool {
-    match command {
-        Command::List { json }
-        | Command::ShowCommands { json, .. }
-        | Command::Run { json, .. }
-        | Command::Ps { json, .. }
-        | Command::Context { json, .. }
-        | Command::Status { json, .. }
-        | Command::Recent { json, .. }
-        | Command::Rerun { json, .. } => *json,
-        Command::Tasks { action } => match action {
-            crate::tasks::TaskCommand::List { json, .. } => *json,
-            crate::tasks::TaskCommand::Add { .. }
-            | crate::tasks::TaskCommand::Set { .. }
-            | crate::tasks::TaskCommand::Remove { .. } => true,
-        },
-        Command::Workflow { action } => match action {
-            WorkflowCommand::List { json, .. } | WorkflowCommand::Run { json, .. } => *json,
-        },
-        Command::Plugin { action } => match action {
-            PluginCommand::List { json, .. } => *json,
-            PluginCommand::Manifest { .. }
-            | PluginCommand::Panels { .. }
-            | PluginCommand::Actions { .. }
-            | PluginCommand::Run { .. } => true,
-            PluginCommand::Add { .. }
-            | PluginCommand::AddPath { .. }
-            | PluginCommand::Remove { .. } => false,
-        },
-        Command::Agent { .. } => true,
-        Command::Sandbox { action } => match action {
-            crate::sandbox::SandboxCommand::Plan { json, .. }
-            | crate::sandbox::SandboxCommand::Run { json, .. }
-            | crate::sandbox::SandboxCommand::Doctor { json } => *json,
-        },
-        Command::Scan { .. }
-        | Command::Start { .. }
-        | Command::Stop { .. }
-        | Command::Restart { .. }
-        | Command::Logs { .. }
-        | Command::Git { .. }
-        | Command::Docker { .. }
-        | Command::Gh { .. }
-        | Command::Search { .. }
-        | Command::SshHosts
-        | Command::Journal { .. }
-        | Command::Tui
-        | Command::Init
-        | Command::ClearRuns => false,
-    }
+    let output = selected
+        .iter()
+        .map(|project| ProjectStatus {
+            project: project_ref(project),
+            git: &project.git,
+            process_count: project.processes.len(),
+        })
+        .collect::<Vec<_>>();
+    emit(&output, json)
 }
 
 fn raw_args_want_json_error() -> bool {

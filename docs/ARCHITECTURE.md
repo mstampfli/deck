@@ -7,7 +7,8 @@ few stable primitives:
 - `CommandSpec`: a runnable command, either shell-backed or direct `argv`.
 - `DeckConfig`: the project-local `deck.toml` schema.
 - `State`: the user-local persisted runtime state.
-- JSON contracts in `contracts.rs`: stable output shapes for agents and scripts.
+- Output contracts in `contracts.rs`: every command output is one struct with a
+  JSON form (serde) and a human form (`Render`), printed through `emit`.
 
 The CLI is intentionally thin. Most commands parse arguments in `cli.rs` or
 `agent.rs`, select projects through `selection.rs`, then delegate to a feature
@@ -17,7 +18,8 @@ module.
 
 Typical command execution:
 
-1. `cli.rs` parses top-level commands and decides whether errors should be JSON.
+1. `cli.rs` parses top-level commands; the global `--json` flag selects the
+   rendering and whether errors use the JSON envelope.
 2. `selection.rs` loads projects, state, and state paths.
 3. `discover.rs` builds fresh project views from scan roots and state.
 4. `adapters.rs` detects commands from `deck.toml`, Cargo, npm, Make, just, and
@@ -34,7 +36,7 @@ and `contracts.rs`.
 | Module | Responsibility |
 | --- | --- |
 | `main.rs` | Binary entry point and module registration. |
-| `cli.rs` | Human-facing top-level CLI parsing, dispatch, and JSON-error mode selection. |
+| `cli.rs` | Top-level CLI parsing, the global `--json` flag, dispatch, and JSON-error selection. |
 | `agent.rs` | Stable machine-facing `deck agent` namespace and capability manifest. |
 | `agent_session.rs` | One-shot agent startup bundle combining context, tasks, safety, and sandbox profiles. |
 | `adapters.rs` | Tool and config adapters that turn external project files into `CommandSpec` values. |
@@ -42,7 +44,7 @@ and `contracts.rs`.
 | `config.rs` | `deck.toml` schema, default config generation, atomic writes, and config locking. |
 | `config_edit.rs` | Agent-safe mutations of project config: commands, workflows, plugins, and sandbox profiles. |
 | `context.rs` | Deterministic context bundles for agents and external tools. |
-| `contracts.rs` | Serializable JSON response contracts and shared JSON printing helpers. |
+| `contracts.rs` | Output contracts: serializable shapes, their human renderings, and `emit`. |
 | `discover.rs` | Filesystem scanning and project detection. |
 | `errors.rs` | Maps internal error messages to stable JSON error kinds. |
 | `history.rs` | Read-only run history views and `deck rerun` over existing state. |
@@ -133,7 +135,8 @@ Use this checklist for new features:
 
 1. Put domain types in `model.rs` only if they are cross-cutting.
 2. Keep persistent schemas in `config.rs` or `state.rs`, not ad hoc files.
-3. Add JSON output structs to `contracts.rs` when the shape is public.
+3. Add output structs to `contracts.rs` (or the owning module) and implement
+   `Render` so the command has both JSON and human forms by construction.
 4. Route CLI parsing through `cli.rs` or `agent.rs`, but keep behavior in a
    focused module.
 5. Use `selection.rs` for loading and selecting projects/commands.

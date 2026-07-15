@@ -77,26 +77,26 @@ Run logs and scan state are stored under the XDG state directory, normally:
 ~/.local/state/deck/
 ```
 
-## Agent JSON
+## JSON Output
 
-Commands with `--json` are intended to be consumed by agents and scripts. They
-print structured JSON on stdout.
+`--json` is a global flag: every command prints structured JSON with it and
+human-readable text without it. Both renderings come from the same data, so
+scripts and agents can rely on any command they can see.
 
 ```sh
 ./target/debug/deck list --json
 ./target/debug/deck commands deck --json
 ./target/debug/deck status deck --json
-./target/debug/deck ps --json
 ./target/debug/deck run deck check --dry-run --json
-./target/debug/deck run deck check --json
-./target/debug/deck workflow list deck --json
-./target/debug/deck workflow run deck check --dry-run --json
-./target/debug/deck workflow run deck check --json
-./target/debug/deck plugin list --json
-./target/debug/deck plugin list deck --json
+./target/debug/deck tasks add deck ship --title "Ship v1" --json
+./target/debug/deck --json ps
 ```
 
-JSON-mode failures use the same shape:
+A failed `deck run`, `deck workflow run`, or `deck sandbox run` exits nonzero
+and prints exactly one result document (with `"ok": false`); no second error
+document follows it.
+
+Failures before a result exists use the shared error envelope:
 
 ```json
 {

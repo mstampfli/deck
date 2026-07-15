@@ -13,7 +13,7 @@ use crate::config::{
     SandboxBackend, SandboxConfig, SandboxPreset, WorkflowConfig, deck_config_path,
     load_or_default_deck_config, lock_deck_config, write_deck_config,
 };
-use crate::contracts::{ConfigEditJson, print_json, project_ref};
+use crate::contracts::{ConfigEditJson, emit, project_ref};
 use crate::model::Project;
 use crate::selection::{load_projects, select_command, select_project};
 
@@ -205,7 +205,7 @@ impl From<AgentSandboxBackend> for SandboxBackend {
     }
 }
 
-pub fn run(action: AgentConfigCommand) -> Result<()> {
+pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
     match action {
         AgentConfigCommand::AddCommand {
             project,
@@ -215,15 +215,21 @@ pub fn run(action: AgentConfigCommand) -> Result<()> {
             port,
             replace,
             dry_run,
-        } => edit_project_config(&project, "add-command", dry_run, |config, _project| {
-            validate_config_key("command", &name)?;
-            if port.is_some() && !matches!(kind, AgentCommandKind::Server) {
-                anyhow::bail!("command port requires kind=server");
-            }
-            insert_config_entry(&mut config.commands, &name, replace, || {
-                command_config(cmd, kind, port)
-            })
-        }),
+        } => edit_project_config(
+            &project,
+            "add-command",
+            dry_run,
+            json,
+            |config, _project| {
+                validate_config_key("command", &name)?;
+                if port.is_some() && !matches!(kind, AgentCommandKind::Server) {
+                    anyhow::bail!("command port requires kind=server");
+                }
+                insert_config_entry(&mut config.commands, &name, replace, || {
+                    command_config(cmd, kind, port)
+                })
+            },
+        ),
         AgentConfigCommand::AddArgvCommand {
             project,
             name,
@@ -232,50 +238,70 @@ pub fn run(action: AgentConfigCommand) -> Result<()> {
             port,
             replace,
             dry_run,
-        } => edit_project_config(&project, "add-argv-command", dry_run, |config, _project| {
-            validate_config_key("command", &name)?;
-            validate_argv(&argv)?;
-            if port.is_some() && !matches!(kind, AgentCommandKind::Server) {
-                anyhow::bail!("command port requires kind=server");
-            }
-            insert_config_entry(&mut config.commands, &name, replace, || {
-                argv_command_config(argv, kind, port)
-            })
-        }),
+        } => edit_project_config(
+            &project,
+            "add-argv-command",
+            dry_run,
+            json,
+            |config, _project| {
+                validate_config_key("command", &name)?;
+                validate_argv(&argv)?;
+                if port.is_some() && !matches!(kind, AgentCommandKind::Server) {
+                    anyhow::bail!("command port requires kind=server");
+                }
+                insert_config_entry(&mut config.commands, &name, replace, || {
+                    argv_command_config(argv, kind, port)
+                })
+            },
+        ),
         AgentConfigCommand::RemoveCommand {
             project,
             name,
             dry_run,
-        } => edit_project_config(&project, "remove-command", dry_run, |config, _project| {
-            remove_config_entry(&mut config.commands, "command", &name)
-        }),
+        } => edit_project_config(
+            &project,
+            "remove-command",
+            dry_run,
+            json,
+            |config, _project| remove_config_entry(&mut config.commands, "command", &name),
+        ),
         AgentConfigCommand::AddWorkflow {
             project,
             name,
             steps,
             replace,
             dry_run,
-        } => edit_project_config(&project, "add-workflow", dry_run, |config, project| {
-            validate_config_key("workflow", &name)?;
-            validate_workflow_steps(project, &steps)?;
-            insert_config_entry(&mut config.workflows, &name, replace, || WorkflowConfig {
-                steps,
-            })
-        }),
+        } => edit_project_config(
+            &project,
+            "add-workflow",
+            dry_run,
+            json,
+            |config, project| {
+                validate_config_key("workflow", &name)?;
+                validate_workflow_steps(project, &steps)?;
+                insert_config_entry(&mut config.workflows, &name, replace, || WorkflowConfig {
+                    steps,
+                })
+            },
+        ),
         AgentConfigCommand::RemoveWorkflow {
             project,
             name,
             dry_run,
-        } => edit_project_config(&project, "remove-workflow", dry_run, |config, _project| {
-            remove_config_entry(&mut config.workflows, "workflow", &name)
-        }),
+        } => edit_project_config(
+            &project,
+            "remove-workflow",
+            dry_run,
+            json,
+            |config, _project| remove_config_entry(&mut config.workflows, "workflow", &name),
+        ),
         AgentConfigCommand::AddPlugin {
             project,
             name,
             cmd,
             replace,
             dry_run,
-        } => edit_project_config(&project, "add-plugin", dry_run, |config, _project| {
+        } => edit_project_config(&project, "add-plugin", dry_run, json, |config, _project| {
             validate_config_key("plugin", &name)?;
             insert_config_entry(&mut config.plugins, &name, replace, || PluginConfig { cmd })
         }),
@@ -287,7 +313,7 @@ pub fn run(action: AgentConfigCommand) -> Result<()> {
             dry_run,
         } => {
             let cmd = crate::plugin::command_from_path(&path)?;
-            edit_project_config(&project, "add-plugin", dry_run, |config, _project| {
+            edit_project_config(&project, "add-plugin", dry_run, json, |config, _project| {
                 validate_config_key("plugin", &name)?;
                 insert_config_entry(&mut config.plugins, &name, replace, || PluginConfig { cmd })
             })
@@ -296,9 +322,13 @@ pub fn run(action: AgentConfigCommand) -> Result<()> {
             project,
             name,
             dry_run,
-        } => edit_project_config(&project, "remove-plugin", dry_run, |config, _project| {
-            remove_config_entry(&mut config.plugins, "plugin", &name)
-        }),
+        } => edit_project_config(
+            &project,
+            "remove-plugin",
+            dry_run,
+            json,
+            |config, _project| remove_config_entry(&mut config.plugins, "plugin", &name),
+        ),
         AgentConfigCommand::AddSandbox {
             project,
             name,
@@ -312,41 +342,57 @@ pub fn run(action: AgentConfigCommand) -> Result<()> {
             allow_shell,
             replace,
             dry_run,
-        } => edit_project_config(&project, "add-sandbox", dry_run, |config, _project| {
-            validate_config_key("sandbox", &name)?;
-            for path in &writable {
-                crate::sandbox::validate_writable_path(path)?;
-            }
-            for name in &env {
-                crate::sandbox::validate_env_name(name)?;
-            }
-            if let Some(timeout_seconds) = timeout_seconds {
-                crate::sandbox::validate_timeout_seconds(timeout_seconds)?;
-            }
-            insert_config_entry(&mut config.sandbox, &name, replace, || {
-                sandbox_config(SandboxConfigInput {
-                    preset,
-                    backend,
-                    network,
-                    readonly_project,
-                    writable,
-                    env,
-                    timeout_seconds,
-                    allow_shell,
+        } => edit_project_config(
+            &project,
+            "add-sandbox",
+            dry_run,
+            json,
+            |config, _project| {
+                validate_config_key("sandbox", &name)?;
+                for path in &writable {
+                    crate::sandbox::validate_writable_path(path)?;
+                }
+                for name in &env {
+                    crate::sandbox::validate_env_name(name)?;
+                }
+                if let Some(timeout_seconds) = timeout_seconds {
+                    crate::sandbox::validate_timeout_seconds(timeout_seconds)?;
+                }
+                insert_config_entry(&mut config.sandbox, &name, replace, || {
+                    sandbox_config(SandboxConfigInput {
+                        preset,
+                        backend,
+                        network,
+                        readonly_project,
+                        writable,
+                        env,
+                        timeout_seconds,
+                        allow_shell,
+                    })
                 })
-            })
-        }),
+            },
+        ),
         AgentConfigCommand::RemoveSandbox {
             project,
             name,
             dry_run,
-        } => edit_project_config(&project, "remove-sandbox", dry_run, |config, _project| {
-            remove_config_entry(&mut config.sandbox, "sandbox", &name)
-        }),
+        } => edit_project_config(
+            &project,
+            "remove-sandbox",
+            dry_run,
+            json,
+            |config, _project| remove_config_entry(&mut config.sandbox, "sandbox", &name),
+        ),
     }
 }
 
-fn edit_project_config<F>(project_query: &str, action: &str, dry_run: bool, mutate: F) -> Result<()>
+fn edit_project_config<F>(
+    project_query: &str,
+    action: &str,
+    dry_run: bool,
+    json: bool,
+    mutate: F,
+) -> Result<()>
 where
     F: FnOnce(&mut DeckConfig, &Project) -> Result<bool>,
 {
@@ -359,15 +405,18 @@ where
     if changed && !dry_run {
         write_deck_config(&project.root, &config)?;
     }
-    print_json(&ConfigEditJson {
-        ok: true,
-        project: project_ref(project),
-        path,
-        action,
-        dry_run,
-        changed,
-        config,
-    })
+    emit(
+        &ConfigEditJson {
+            ok: true,
+            project: project_ref(project),
+            path,
+            action,
+            dry_run,
+            changed,
+            config,
+        },
+        json,
+    )
 }
 
 fn command_config(cmd: String, kind: AgentCommandKind, port: Option<u16>) -> CommandConfig {

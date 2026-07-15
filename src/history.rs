@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::contracts::{ProjectRef, print_json, project_ref};
+use crate::contracts::{ProjectRef, Render, emit, project_ref};
 use crate::model::RunSummary;
 use crate::selection::{load_projects, select_project};
 
@@ -15,6 +15,22 @@ struct RecentJson<'a> {
     ok: bool,
     project: Option<ProjectRef<'a>>,
     runs: Vec<RunSummary>,
+}
+
+impl Render for RecentJson<'_> {
+    fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        for run in &self.runs {
+            writeln!(
+                out,
+                "{:<24} {:<18} exit={:?} log={}",
+                run.project_id,
+                run.command_name,
+                run.exit_code,
+                run.log_path.display()
+            )?;
+        }
+        Ok(())
+    }
 }
 
 pub fn recent(project_query: Option<&str>, limit: usize, json: bool) -> Result<()> {
@@ -27,23 +43,14 @@ pub fn recent(project_query: Option<&str>, limit: usize, json: bool) -> Result<(
         project.map(|project| project.id.as_str()),
         limit,
     );
-    if json {
-        return print_json(&RecentJson {
+    emit(
+        &RecentJson {
             ok: true,
             project: project.map(project_ref),
             runs,
-        });
-    }
-    for run in runs {
-        println!(
-            "{:<24} {:<18} exit={:?} log={}",
-            run.project_id,
-            run.command_name,
-            run.exit_code,
-            run.log_path.display()
-        );
-    }
-    Ok(())
+        },
+        json,
+    )
 }
 
 pub fn rerun(

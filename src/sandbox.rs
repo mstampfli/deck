@@ -14,7 +14,8 @@ use clap::Subcommand;
 use serde::Serialize;
 
 use crate::config::{SandboxBackend, SandboxConfig, SandboxPreset, load_deck_config};
-use crate::contracts::{print_json, project_ref};
+use crate::contracts::{Render, emit, project_ref};
+use crate::errors::Reported;
 use crate::model::{CommandSpec, Project};
 use crate::selection::{load_projects, select_command, select_project};
 
@@ -30,8 +31,6 @@ pub enum SandboxCommand {
         profile: String,
         #[arg(long)]
         timeout_seconds: Option<u64>,
-        #[arg(long)]
-        json: bool,
     },
     Run {
         project: String,
@@ -40,13 +39,8 @@ pub enum SandboxCommand {
         profile: String,
         #[arg(long)]
         timeout_seconds: Option<u64>,
-        #[arg(long)]
-        json: bool,
     },
-    Doctor {
-        #[arg(long)]
-        json: bool,
-    },
+    Doctor,
 }
 
 #[derive(Debug, Clone)]
@@ -137,23 +131,21 @@ enum SandboxBackendJson {
     Bwrap,
 }
 
-pub fn run(action: SandboxCommand) -> Result<()> {
+pub fn run(action: SandboxCommand, json: bool) -> Result<()> {
     match action {
         SandboxCommand::Plan {
             project,
             command,
             profile,
             timeout_seconds,
-            json,
         } => plan_command(&project, &command, &profile, timeout_seconds, json),
         SandboxCommand::Run {
             project,
             command,
             profile,
             timeout_seconds,
-            json,
         } => run_command(&project, &command, &profile, timeout_seconds, json),
-        SandboxCommand::Doctor { json } => doctor(json),
+        SandboxCommand::Doctor => doctor(json),
     }
 }
 
@@ -168,11 +160,7 @@ fn plan_command(
     let project = select_project(&projects, project_query)?;
     let command = select_command(project, command_query)?;
     let plan = build_plan(project, command, profile, timeout_seconds)?;
-    if json {
-        return print_json(&plan.json);
-    }
-    print_plan(&plan.json);
-    Ok(())
+    emit(&plan.json, json)
 }
 
 fn run_command(
@@ -190,8 +178,8 @@ fn run_command(
     prepare_writable_paths(project, &plan.json.writable)?;
     if json {
         let output = run_bwrap_capture(&plan.process_argv, plan.timeout)?;
-        return print_json(&SandboxRunJson {
-            ok: output.output.status.success(),
+        let report = SandboxRunJson {
+            ok: output.output.status.success() && !output.timed_out,
             project: plan.json.project,
             command: command.name.clone(),
             profile: profile.to_string(),
@@ -204,7 +192,12 @@ fn run_command(
                 output.output.status.code(),
                 &String::from_utf8_lossy(&output.output.stderr),
             ),
-        });
+        };
+        emit(&report, true)?;
+        if !report.ok {
+            return Err(Reported.into());
+        }
+        return Ok(());
     }
     let (status, timed_out) = run_bwrap_status(&plan.process_argv, plan.timeout)?;
     if timed_out {
@@ -602,20 +595,9 @@ fn run_bwrap_status(argv: &[String], timeout: Option<Duration>) -> Result<(ExitS
 
 fn doctor(json: bool) -> Result<()> {
     let report = doctor_report();
-    if json {
-        return print_json(&report);
-    }
-    println!("bwrap: {}", format_check(&report.bwrap));
-    println!(
-        "filesystem sandbox: {}",
-        format_check(&report.filesystem_sandbox)
-    );
-    println!("network sandbox: {}", format_check(&report.network_sandbox));
-    println!("parent no_new_privs: {:?}", report.parent.no_new_privs);
-    println!("parent seccomp_mode: {:?}", report.parent.seccomp_mode);
-    println!("recommendation: {}", report.recommendation);
+    emit(&report, json)?;
     if !report.ok {
-        anyhow::bail!("sandbox doctor found a blocking issue");
+        return Err(Reported.into());
     }
     Ok(())
 }
@@ -811,34 +793,78 @@ fn ensure_bwrap_available() -> Result<()> {
     }
 }
 
-fn print_plan(plan: &SandboxPlanJson) {
-    println!(
-        "project: {} ({})",
-        plan.project.name,
-        plan.project.root.display()
-    );
-    println!("command: {}", plan.command.name);
-    println!("profile: {}", plan.profile);
-    println!("backend: bwrap");
-    println!("network: {}", plan.network);
-    println!("readonly_project: {}", plan.readonly_project);
-    println!("allow_shell: {}", plan.allow_shell);
-    if let Some(timeout_seconds) = plan.timeout_seconds {
-        println!("timeout_seconds: {timeout_seconds}");
-    } else {
-        println!("timeout_seconds: none");
+impl Render for SandboxPlanJson {
+    fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(
+            out,
+            "project: {} ({})",
+            self.project.name,
+            self.project.root.display()
+        )?;
+        writeln!(out, "command: {}", self.command.name)?;
+        writeln!(out, "profile: {}", self.profile)?;
+        writeln!(out, "backend: bwrap")?;
+        writeln!(out, "network: {}", self.network)?;
+        writeln!(out, "readonly_project: {}", self.readonly_project)?;
+        writeln!(out, "allow_shell: {}", self.allow_shell)?;
+        if let Some(timeout_seconds) = self.timeout_seconds {
+            writeln!(out, "timeout_seconds: {timeout_seconds}")?;
+        } else {
+            writeln!(out, "timeout_seconds: none")?;
+        }
+        writeln!(out, "env:")?;
+        for name in &self.env {
+            writeln!(out, "  {name}")?;
+        }
+        writeln!(out, "writable:")?;
+        for path in &self.writable {
+            writeln!(out, "  {}", path.display())?;
+        }
+        writeln!(out, "argv:")?;
+        for arg in &self.argv {
+            writeln!(out, "  {arg}")?;
+        }
+        Ok(())
     }
-    println!("env:");
-    for name in &plan.env {
-        println!("  {name}");
+}
+
+impl Render for SandboxRunJson {
+    fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        write!(out, "{}", self.stdout)?;
+        write!(out, "{}", self.stderr)?;
+        if self.timed_out {
+            writeln!(out, "sandboxed command timed out")?;
+        } else if !self.ok {
+            match self.exit_code {
+                Some(code) => writeln!(out, "sandboxed command failed with exit code {code}")?,
+                None => writeln!(out, "sandboxed command was terminated by a signal")?,
+            }
+        }
+        if let Some(diagnosis) = &self.diagnosis {
+            writeln!(out, "diagnosis: {}", diagnosis.message)?;
+            writeln!(out, "recommendation: {}", diagnosis.recommendation)?;
+        }
+        Ok(())
     }
-    println!("writable:");
-    for path in &plan.writable {
-        println!("  {}", path.display());
-    }
-    println!("argv:");
-    for arg in &plan.argv {
-        println!("  {arg}");
+}
+
+impl Render for SandboxDoctorJson {
+    fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(out, "bwrap: {}", format_check(&self.bwrap))?;
+        writeln!(
+            out,
+            "filesystem sandbox: {}",
+            format_check(&self.filesystem_sandbox)
+        )?;
+        writeln!(
+            out,
+            "network sandbox: {}",
+            format_check(&self.network_sandbox)
+        )?;
+        writeln!(out, "parent no_new_privs: {:?}", self.parent.no_new_privs)?;
+        writeln!(out, "parent seccomp_mode: {:?}", self.parent.seccomp_mode)?;
+        writeln!(out, "recommendation: {}", self.recommendation)?;
+        Ok(())
     }
 }
 

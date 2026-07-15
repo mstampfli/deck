@@ -11,15 +11,13 @@ use crate::config::{
     DeckConfig, TaskConfig, TaskStatus, deck_config_path, load_or_default_deck_config,
     lock_deck_config, write_deck_config,
 };
-use crate::contracts::{ConfigEditJson, ProjectRef, print_json, project_ref};
+use crate::contracts::{ConfigEditJson, ProjectRef, Render, emit, project_ref};
 use crate::selection::{load_projects, select_project};
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommand {
     List {
         project: String,
-        #[arg(long)]
-        json: bool,
     },
     Add {
         project: String,
@@ -101,9 +99,33 @@ struct TaskItemJson {
     notes: Option<String>,
 }
 
-pub fn run(action: TaskCommand) -> Result<()> {
+impl Render for TaskListJson<'_> {
+    fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        writeln!(
+            out,
+            "{} ({})",
+            self.project.name,
+            self.project.root.display()
+        )?;
+        for task in &self.tasks {
+            writeln!(
+                out,
+                "  {:<18} {:<8} {}",
+                task.name,
+                task.status,
+                task.title.as_deref().unwrap_or_default()
+            )?;
+            if let Some(notes) = &task.notes {
+                writeln!(out, "    {notes}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn run(action: TaskCommand, json: bool) -> Result<()> {
     match action {
-        TaskCommand::List { project, json } => list(&project, json),
+        TaskCommand::List { project } => list(&project, json),
         TaskCommand::Add {
             project,
             name,
@@ -112,7 +134,7 @@ pub fn run(action: TaskCommand) -> Result<()> {
             notes,
             replace,
             dry_run,
-        } => edit(&project, "add-task", dry_run, |config| {
+        } => edit(&project, "add-task", dry_run, json, |config| {
             validate_task_name(&name)?;
             if config.tasks.contains_key(&name) && !replace {
                 anyhow::bail!("{name:?} already exists; pass --replace to overwrite it");
@@ -134,7 +156,7 @@ pub fn run(action: TaskCommand) -> Result<()> {
             status,
             notes,
             dry_run,
-        } => edit(&project, "set-task", dry_run, |config| {
+        } => edit(&project, "set-task", dry_run, json, |config| {
             validate_task_name(&name)?;
             let task = config
                 .tasks
@@ -155,7 +177,7 @@ pub fn run(action: TaskCommand) -> Result<()> {
             project,
             name,
             dry_run,
-        } => edit(&project, "remove-task", dry_run, |config| {
+        } => edit(&project, "remove-task", dry_run, json, |config| {
             validate_task_name(&name)?;
             if config.tasks.remove(&name).is_none() {
                 anyhow::bail!("no task named {name:?}");
@@ -179,29 +201,23 @@ fn list(project_query: &str, json: bool) -> Result<()> {
             notes: task.notes,
         })
         .collect::<Vec<_>>();
-    if json {
-        return print_json(&TaskListJson {
+    emit(
+        &TaskListJson {
             ok: true,
             project: project_ref(project),
             tasks,
-        });
-    }
-    println!("{} ({})", project.name, project.root.display());
-    for task in tasks {
-        println!(
-            "  {:<18} {:<8} {}",
-            task.name,
-            task.status,
-            task.title.unwrap_or_default()
-        );
-        if let Some(notes) = task.notes {
-            println!("    {notes}");
-        }
-    }
-    Ok(())
+        },
+        json,
+    )
 }
 
-fn edit<F>(project_query: &str, action: &'static str, dry_run: bool, mutate: F) -> Result<()>
+fn edit<F>(
+    project_query: &str,
+    action: &'static str,
+    dry_run: bool,
+    json: bool,
+    mutate: F,
+) -> Result<()>
 where
     F: FnOnce(&mut DeckConfig) -> Result<bool>,
 {
@@ -214,15 +230,18 @@ where
     if changed && !dry_run {
         write_deck_config(&project.root, &config)?;
     }
-    print_json(&ConfigEditJson {
-        ok: true,
-        project: project_ref(project),
-        path,
-        action,
-        dry_run,
-        changed,
-        config,
-    })
+    emit(
+        &ConfigEditJson {
+            ok: true,
+            project: project_ref(project),
+            path,
+            action,
+            dry_run,
+            changed,
+            config,
+        },
+        json,
+    )
 }
 
 fn validate_task_name(name: &str) -> Result<()> {

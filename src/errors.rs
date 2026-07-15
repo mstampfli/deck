@@ -3,6 +3,22 @@
 //! Internal errors are mapped to coarse `DeckErrorKind` values so agents can
 //! handle failures without parsing human prose.
 
+/// Marker error for failures whose output was already emitted.
+///
+/// Commands that print a structured failure (for example a run summary with
+/// `ok: false`) return this so the process exits nonzero without printing a
+/// second, redundant error document.
+#[derive(Debug)]
+pub struct Reported;
+
+impl std::fmt::Display for Reported {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("failure already reported")
+    }
+}
+
+impl std::error::Error for Reported {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeckErrorKind {
     UnknownProject,

@@ -4,9 +4,11 @@
 //! tools can discover Deck's supported operations.
 
 use anyhow::Result;
+use serde::Serialize;
 
 use crate::config_edit::AgentConfigCommand;
-use crate::contracts::{AgentContextSuggestion, AgentInspect, ProcessJson, print_json};
+use crate::contracts::{ProcessJson, print_json};
+use crate::model::{CommandSpec, GitStatus, PluginSpec, WorkflowSpec};
 use crate::planner::{command_plan, workflow_plan};
 use crate::selection::{
     context_project, filtered_processes, load_projects, recent_runs_for, select_command,
@@ -54,6 +56,24 @@ pub enum AgentSessionCommand {
     Start { project: String },
 }
 
+#[derive(Debug, Serialize)]
+struct AgentInspect {
+    project: crate::context::ContextProject,
+    git: Option<GitStatus>,
+    commands: Vec<CommandSpec>,
+    workflows: Vec<WorkflowSpec>,
+    plugins: Vec<PluginSpec>,
+    processes: Vec<ProcessJson>,
+    recent_runs: Vec<crate::model::RunSummary>,
+    context: AgentContextSuggestion,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentContextSuggestion {
+    command: Vec<String>,
+    json_command: Vec<String>,
+}
+
 pub fn run(action: AgentCommand) -> Result<()> {
     match action {
         AgentCommand::Projects => crate::commands::list(true),
@@ -85,7 +105,7 @@ pub fn run(action: AgentCommand) -> Result<()> {
         AgentCommand::Session { action } => match action {
             AgentSessionCommand::Start { project } => crate::agent_session::start(&project),
         },
-        AgentCommand::Config { action } => crate::config_edit::run(action),
+        AgentCommand::Config { action } => crate::config_edit::run(action, true),
         AgentCommand::Capabilities => capabilities(),
     }
 }

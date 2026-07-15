@@ -5,42 +5,17 @@
 use anyhow::Result;
 
 use crate::contracts::{
-    ProcessJson, ProjectListItem, RunJson, WorkflowRunJson, print_json, project_ref,
+    ProcessJson, RunJson, WorkflowRunJson, emit, project_list_item, project_ref,
 };
+use crate::errors::Reported;
 use crate::planner::{command_plan, workflow_plan};
 use crate::process::run_command_stream;
 use crate::selection::{filtered_processes, load_projects, select_command, select_project};
 
 pub fn list(json: bool) -> Result<()> {
     let (projects, _, _) = load_projects(&[])?;
-    if json {
-        let output = projects
-            .iter()
-            .map(|project| ProjectListItem {
-                id: &project.id,
-                name: &project.name,
-                root: &project.root,
-                kinds: project.kinds.iter().map(|kind| kind.label()).collect(),
-            })
-            .collect::<Vec<_>>();
-        return print_json(&output);
-    }
-    for project in projects {
-        let kinds = project
-            .kinds
-            .iter()
-            .map(|kind| kind.label())
-            .collect::<Vec<_>>()
-            .join(",");
-        println!(
-            "{:<18} {:<24} {:<20} {}",
-            project.id,
-            project.name,
-            kinds,
-            project.root.display()
-        );
-    }
-    Ok(())
+    let output = projects.iter().map(project_list_item).collect::<Vec<_>>();
+    emit(&output, json)
 }
 
 pub fn run_project_command(
@@ -63,19 +38,22 @@ pub fn run_project_command(
             Ok(())
         })?
     };
-    if json {
-        print_json(&RunJson {
-            ok: result.summary.exit_code == Some(0),
+    let ok = result.summary.exit_code == Some(0);
+    emit(
+        &RunJson {
+            ok,
             project: project_ref(project),
             command: &result.summary.command_name,
             exit_code: result.summary.exit_code,
             log_path: &result.summary.log_path,
-        })?;
-    } else {
-        println!("log: {}", result.summary.log_path.display());
-    }
+        },
+        json,
+    )?;
     state.record_run(result.summary);
     state.save(&paths)?;
+    if !ok {
+        return Err(Reported.into());
+    }
     Ok(())
 }
 
@@ -84,35 +62,14 @@ pub fn ps(project_query: Option<&str>, json: bool) -> Result<()> {
     let selected_project = project_query
         .map(|query| select_project(&projects, query))
         .transpose()?;
-    let views = filtered_processes(&state, selected_project);
-    if json {
-        let output = views
-            .into_iter()
-            .map(|view| ProcessJson {
-                process: view.process,
-                alive: view.alive,
-            })
-            .collect::<Vec<_>>();
-        return print_json(&output);
-    }
-    for view in views {
-        let status = if view.alive { "running" } else { "stopped" };
-        let port = view
-            .process
-            .port
-            .map(|port| format!(":{port}"))
-            .unwrap_or_default();
-        println!(
-            "{:<8} pid={:<8} {:<18} {:<18} {} {}",
-            status,
-            view.process.pid,
-            view.process.project_name,
-            view.process.command_name,
-            port,
-            view.process.log_path.display()
-        );
-    }
-    Ok(())
+    let output = filtered_processes(&state, selected_project)
+        .into_iter()
+        .map(|view| ProcessJson {
+            process: view.process,
+            alive: view.alive,
+        })
+        .collect::<Vec<_>>();
+    emit(&output, json)
 }
 
 pub fn run_workflow(
@@ -136,27 +93,18 @@ pub fn run_workflow(
         })?
     };
     state.save(&paths)?;
-    if json {
-        let output = WorkflowRunJson {
+    emit(
+        &WorkflowRunJson {
             ok: result.failed_step.is_none(),
             project: project_ref(project),
             workflow: &result.workflow_name,
             completed_steps: &result.completed_steps,
             failed_step: &result.failed_step,
-        };
-        print_json(&output)?;
-        if result.failed_step.is_some() {
-            anyhow::bail!("workflow {} failed", result.workflow_name);
-        }
-        return Ok(());
+        },
+        json,
+    )?;
+    if result.failed_step.is_some() {
+        return Err(Reported.into());
     }
-    if let Some(step) = result.failed_step {
-        anyhow::bail!("workflow {} failed at step {step}", result.workflow_name);
-    }
-    println!(
-        "workflow {} completed {} steps",
-        result.workflow_name,
-        result.completed_steps.len()
-    );
     Ok(())
 }
