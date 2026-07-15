@@ -208,6 +208,40 @@ fn sandbox_plan_blocks_shell_under_locked_profile() {
 }
 
 #[test]
+fn summary_renders_for_humans_and_agents() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let json_out = deck(state.path(), &["summary", "fixture", "--json"]);
+    assert_success(&json_out);
+    let json: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["context"]["project"]["name"], "fixture");
+    assert!(
+        json["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command["name"] == "hello" && command["safety"]["direct_argv"] == true)
+    );
+
+    let human_out = deck(state.path(), &["summary", "fixture"]);
+    assert_success(&human_out);
+    let stdout = String::from_utf8_lossy(&human_out.stdout);
+    assert!(stdout.contains("commands:"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("sandbox profiles:"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(!stdout.contains('{'), "expected no JSON: {stdout}");
+}
+
+#[test]
 fn agent_session_contains_context_and_safety() {
     let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

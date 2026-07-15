@@ -107,6 +107,9 @@ enum Command {
     Status {
         project: Option<String>,
     },
+    Summary {
+        project: String,
+    },
     Sandbox {
         #[command(subcommand)]
         action: crate::sandbox::SandboxCommand,
@@ -258,6 +261,7 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
         Command::Plugin { action } => plugin(action, json),
         Command::Context { project, output } => context(&project, json, output.as_ref()),
         Command::Status { project } => status(project.as_deref(), json),
+        Command::Summary { project } => crate::summary::summary(&project, json),
         Command::Sandbox { action } => crate::sandbox::run(action, json),
         Command::Tasks { action } => crate::tasks::run(action, json),
         Command::Recent { project, limit } => {

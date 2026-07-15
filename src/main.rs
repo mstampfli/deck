@@ -6,7 +6,6 @@
 
 mod adapters;
 mod agent;
-mod agent_session;
 mod cli;
 mod commands;
 mod config;
@@ -24,6 +23,7 @@ mod safety;
 mod sandbox;
 mod selection;
 mod state;
+mod summary;
 mod tasks;
 mod tools;
 mod tui;

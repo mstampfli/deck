@@ -65,6 +65,7 @@ Full verification:
 ./target/debug/deck plugin list deck
 ./target/debug/deck plugin manifest deck local
 ./target/debug/deck plugin run deck local hello
+./target/debug/deck summary deck
 ./target/debug/deck context deck
 ./target/debug/deck context deck --json --output /tmp/deck-context.json
 ./target/debug/deck tasks list deck --json

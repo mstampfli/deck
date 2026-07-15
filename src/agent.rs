@@ -103,7 +103,7 @@ pub fn run(action: AgentCommand) -> Result<()> {
         }
         AgentCommand::Processes { project } => crate::commands::ps(project.as_deref(), true),
         AgentCommand::Session { action } => match action {
-            AgentSessionCommand::Start { project } => crate::agent_session::start(&project),
+            AgentSessionCommand::Start { project } => crate::summary::summary(&project, true),
         },
         AgentCommand::Config { action } => crate::config_edit::run(action, true),
         AgentCommand::Capabilities => capabilities(),
