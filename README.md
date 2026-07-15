@@ -25,54 +25,60 @@ Deck is licensed under either of:
   full startup bundle).
 - `deck context PROJECT --json`: deterministic project context bundle.
 
-## Build and Verify
+## Install
 
 ```sh
-/home/parrot/.cargo/bin/cargo build
+cargo install --path .
 ```
 
-The project pins the local `stable` rustup toolchain in `rust-toolchain.toml`.
-It does not change the global Rust default.
+Or build and run from the repository:
+
+```sh
+cargo build
+deck --help
+```
+
+The repository pins the `stable` rustup toolchain in `rust-toolchain.toml`.
 
 Full verification:
 
 ```sh
-/home/parrot/.cargo/bin/cargo fmt --all --check
-/home/parrot/.cargo/bin/cargo test
-/home/parrot/.cargo/bin/cargo clippy --all-targets -- -D warnings
-/home/parrot/.cargo/bin/cargo doc --no-deps
+cargo fmt --all --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo doc --no-deps
 ```
 
 ## Basic Usage
 
 ```sh
-./target/debug/deck scan /home/parrot
-./target/debug/deck list
-./target/debug/deck commands deck
-./target/debug/deck run deck check
-./target/debug/deck start my-project serve
-./target/debug/deck ps
-./target/debug/deck stop my-project serve
-./target/debug/deck git deck commits
-./target/debug/deck docker
-./target/debug/deck gh deck issues
-./target/debug/deck search deck CommandSpec
-./target/debug/deck ssh-hosts
-./target/debug/deck journal ssh --lines 50
-./target/debug/deck workflow list deck
-./target/debug/deck workflow run deck check
-./target/debug/deck recent deck --json
-./target/debug/deck rerun deck check --dry-run --json
-./target/debug/deck plugin add health --cmd "python3 ./scripts/health.py"
-./target/debug/deck plugin add-path local ./scripts/deck_plugin.sh
-./target/debug/deck plugin list deck
-./target/debug/deck plugin manifest deck local
-./target/debug/deck plugin run deck local hello
-./target/debug/deck summary deck
-./target/debug/deck context deck
-./target/debug/deck context deck --json --output /tmp/deck-context.json
-./target/debug/deck tasks list deck --json
-./target/debug/deck tui
+deck scan ~/
+deck list
+deck commands deck
+deck run deck check
+deck start my-project serve
+deck ps
+deck stop my-project serve
+deck git deck commits
+deck docker
+deck gh deck issues
+deck search deck CommandSpec
+deck ssh-hosts
+deck journal ssh --lines 50
+deck workflow list deck
+deck workflow run deck check
+deck recent deck --json
+deck rerun deck check --dry-run --json
+deck plugin add health --cmd "python3 ./scripts/health.py"
+deck plugin add-path local ./scripts/deck_plugin.sh
+deck plugin list deck
+deck plugin manifest deck local
+deck plugin run deck local hello
+deck summary deck
+deck context deck
+deck context deck --json --output /tmp/deck-context.json
+deck tasks list deck --json
+deck tui
 ```
 
 Run logs and scan state are stored under the XDG state directory, normally:
@@ -88,12 +94,12 @@ human-readable text without it. Both renderings come from the same data, so
 scripts and agents can rely on any command they can see.
 
 ```sh
-./target/debug/deck list --json
-./target/debug/deck commands deck --json
-./target/debug/deck status deck --json
-./target/debug/deck run deck check --dry-run --json
-./target/debug/deck tasks add deck ship --title "Ship v1" --json
-./target/debug/deck --json ps
+deck list --json
+deck commands deck --json
+deck status deck --json
+deck run deck check --dry-run --json
+deck tasks add deck ship --title "Ship v1" --json
+deck --json ps
 ```
 
 A failed `deck run`, `deck workflow run`, or `deck sandbox run` exits nonzero
@@ -120,17 +126,17 @@ rename. Add operations fail on existing names unless `--replace` is passed, and
 `--dry-run` previews any edit.
 
 ```sh
-./target/debug/deck config add-command deck serve --cmd "npm run dev" --kind server --port 3000
-./target/debug/deck config add-argv-command deck test-direct --arg cargo --arg test
-./target/debug/deck config remove-command deck serve
-./target/debug/deck config add-workflow deck ship --step fmt --step test
-./target/debug/deck config remove-workflow deck ship
-./target/debug/deck config add-plugin deck health --cmd "python3 scripts/health.py"
-./target/debug/deck config add-plugin-path deck local ./scripts/deck_plugin.sh
-./target/debug/deck config remove-plugin deck health
-./target/debug/deck config add-sandbox deck locked --writable ./target --env PATH --timeout-seconds 120 --allow-shell false
-./target/debug/deck config add-sandbox deck locked --preset locked --replace
-./target/debug/deck config remove-sandbox deck locked
+deck config add-command deck serve --cmd "npm run dev" --kind server --port 3000
+deck config add-argv-command deck test-direct --arg cargo --arg test
+deck config remove-command deck serve
+deck config add-workflow deck ship --step fmt --step test
+deck config remove-workflow deck ship
+deck config add-plugin deck health --cmd "python3 scripts/health.py"
+deck config add-plugin-path deck local ./scripts/deck_plugin.sh
+deck config remove-plugin deck health
+deck config add-sandbox deck locked --writable ./target --env PATH --timeout-seconds 120 --allow-shell false
+deck config add-sandbox deck locked --preset locked --replace
+deck config remove-sandbox deck locked
 ```
 
 ## Agents
@@ -203,10 +209,10 @@ allow_shell = true
 ```
 
 ```sh
-./target/debug/deck sandbox plan my-project test --json
-./target/debug/deck sandbox run my-project test --json
-./target/debug/deck sandbox run my-project test --profile default
-./target/debug/deck sandbox run my-project test --timeout-seconds 10
+deck sandbox plan my-project test --json
+deck sandbox run my-project test --json
+deck sandbox run my-project test --profile default
+deck sandbox run my-project test --timeout-seconds 10
 ```
 
 The first backend is Bubblewrap (`bwrap`). Deck validates writable paths before
@@ -232,17 +238,17 @@ environment such as an outer command sandbox.
 Tasks are project-local entries stored in `deck.toml`:
 
 ```sh
-./target/debug/deck tasks list my-project
-./target/debug/deck tasks add my-project ship --title "Ship v1" --status doing
-./target/debug/deck tasks set my-project ship --status done
-./target/debug/deck tasks remove my-project ship
+deck tasks list my-project
+deck tasks add my-project ship --title "Ship v1" --status doing
+deck tasks set my-project ship --status done
+deck tasks remove my-project ship
 ```
 
 Run history uses Deck's existing state:
 
 ```sh
-./target/debug/deck recent [PROJECT] --json
-./target/debug/deck rerun [PROJECT] [COMMAND] --dry-run --json
+deck recent [PROJECT] --json
+deck rerun [PROJECT] [COMMAND] --dry-run --json
 ```
 
 `deck summary PROJECT` renders the same information as a one-screen overview;
@@ -272,8 +278,8 @@ steps = ["fmt", "test"]
 ```
 
 ```sh
-./target/debug/deck workflow list my-project
-./target/debug/deck workflow run my-project ship
+deck workflow list my-project
+deck workflow run my-project ship
 ```
 
 ## Plugins
@@ -284,9 +290,9 @@ and do not need to be on `PATH`.
 Global registry:
 
 ```sh
-./target/debug/deck plugin add NAME --cmd "python3 /path/to/plugin.py"
-./target/debug/deck plugin add-path NAME /path/to/plugin
-./target/debug/deck plugin remove NAME
+deck plugin add NAME --cmd "python3 /path/to/plugin.py"
+deck plugin add-path NAME /path/to/plugin
+deck plugin remove NAME
 ```
 
 Project-local `deck.toml`:
@@ -308,11 +314,11 @@ PLUGIN run ACTION --project /path/to/project
 Deck commands:
 
 ```sh
-./target/debug/deck plugin list [PROJECT]
-./target/debug/deck plugin manifest PROJECT NAME
-./target/debug/deck plugin panels PROJECT NAME
-./target/debug/deck plugin actions PROJECT NAME
-./target/debug/deck plugin run PROJECT NAME ACTION
+deck plugin list [PROJECT]
+deck plugin manifest PROJECT NAME
+deck plugin panels PROJECT NAME
+deck plugin actions PROJECT NAME
+deck plugin run PROJECT NAME ACTION
 ```
 
 ## Context Bundles
@@ -323,9 +329,9 @@ tasks, command safety metadata, processes, recent runs, and bounded snippets of
 key project files.
 
 ```sh
-./target/debug/deck context PROJECT
-./target/debug/deck context PROJECT --json
-./target/debug/deck context PROJECT --json --output /tmp/context.json
+deck context PROJECT
+deck context PROJECT --json
+deck context PROJECT --json --output /tmp/context.json
 ```
 
 ## Codebase Layout

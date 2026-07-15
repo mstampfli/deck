@@ -150,9 +150,9 @@ Use this checklist for new features:
 Before calling a change complete:
 
 ```sh
-/home/parrot/.cargo/bin/cargo fmt --all --check
-/home/parrot/.cargo/bin/cargo test
-/home/parrot/.cargo/bin/cargo clippy --all-targets -- -D warnings
-/home/parrot/.cargo/bin/cargo doc --no-deps
+cargo fmt --all --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo doc --no-deps
 ```
 
