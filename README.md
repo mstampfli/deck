@@ -8,6 +8,13 @@ Deck does not replace git, cargo, npm, docker, gh, shell tools, or agents. It
 wraps them, remembers project context, and exposes a consistent CLI and JSON
 surface.
 
+## License
+
+Deck is licensed under either of:
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): crate/module map, runtime flow, data
