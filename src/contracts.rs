@@ -363,18 +363,6 @@ impl Render for ScanJson<'_> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct InitJson {
-    pub ok: bool,
-    pub path: PathBuf,
-}
-
-impl Render for InitJson {
-    fn human(&self, out: &mut dyn io::Write) -> io::Result<()> {
-        writeln!(out, "wrote {}", self.path.display())
-    }
-}
-
-#[derive(Debug, Serialize)]
 pub struct ClearRunsJson {
     pub ok: bool,
 }

@@ -9,6 +9,16 @@ fn deck(state_home: &std::path::Path, args: &[&str]) -> Output {
         .expect("run deck")
 }
 
+fn deck_in(dir: &std::path::Path, state_home: &std::path::Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_deck"))
+        .args(args)
+        .current_dir(dir)
+        .env("XDG_STATE_HOME", state_home)
+        .env("XDG_DATA_HOME", state_home.join("data"))
+        .output()
+        .expect("run deck")
+}
+
 fn fixture_project(root: &std::path::Path) {
     std::fs::create_dir_all(root).unwrap();
     std::fs::write(
@@ -320,4 +330,173 @@ fn config_edits_work_through_the_standard_namespace() {
         stdout.starts_with("remove-command fixture: wrote "),
         "unexpected stdout: {stdout}"
     );
+}
+
+#[test]
+fn init_seeds_detected_commands_sandbox_and_servers() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("Cargo.toml"),
+        "[package]\nname = \"seeded\"\nversion = \"0.0.0\"\n",
+    )
+    .unwrap();
+
+    let output = deck_in(
+        project.path(),
+        state.path(),
+        &[
+            "init",
+            "--sandbox",
+            "locked",
+            "--server",
+            "run:8080",
+            "--json",
+        ],
+    );
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(json["ok"], true);
+    let commands = json["commands"].as_array().unwrap();
+    let by_name = |name: &str| {
+        commands
+            .iter()
+            .find(|command| command["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+    };
+    assert_eq!(by_name("test")["command"], "cargo test");
+    assert_eq!(by_name("run")["kind"], "server");
+    assert_eq!(by_name("run")["port"], 8080);
+    assert_eq!(json["workflows"][0], "check");
+    assert_eq!(json["sandbox_profiles"][0], "default");
+    assert!(json["shell_commands_blocked_by_profile"].as_u64().unwrap() > 0);
+
+    let written = std::fs::read_to_string(project.path().join("deck.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        parsed["sandbox"]["default"]["allow_shell"],
+        toml::Value::Boolean(false)
+    );
+    assert_eq!(parsed["commands"]["run"]["port"].as_integer(), Some(8080));
+
+    let again = deck_in(project.path(), state.path(), &["init"]);
+    assert!(
+        !again.status.success(),
+        "init must refuse an existing deck.toml"
+    );
+}
+
+#[test]
+fn init_rejects_allow_shell_without_sandbox() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+
+    let output = deck_in(
+        project.path(),
+        state.path(),
+        &["init", "--allow-shell", "false"],
+    );
+
+    assert!(!output.status.success());
+    assert!(!project.path().join("deck.toml").exists());
+}
+
+#[test]
+fn config_apply_merges_a_document_in_one_write() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let doc = project.path().join("setup.toml");
+    std::fs::write(
+        &doc,
+        r#"[commands.extra]
+argv = ["printf", "extra"]
+
+[workflows.go]
+steps = ["extra", "hello"]
+
+[sandbox.applied]
+network = false
+readonly_project = true
+writable = ["./tmp"]
+env = ["PATH"]
+allow_shell = false
+"#,
+    )
+    .unwrap();
+
+    let output = deck(
+        state.path(),
+        &[
+            "config",
+            "apply",
+            "fixture",
+            "--file",
+            doc.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["action"], "apply");
+    assert_eq!(json["changed"], true);
+    assert_eq!(json["config"]["workflows"]["go"]["steps"][0], "extra");
+    assert_eq!(json["config"]["sandbox"]["applied"]["allow_shell"], false);
+
+    let conflict = deck(
+        state.path(),
+        &[
+            "config",
+            "apply",
+            "fixture",
+            "--file",
+            doc.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert!(!conflict.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&conflict.stdout).unwrap();
+    assert_eq!(error["error"]["kind"], "conflict");
+}
+
+#[test]
+fn config_apply_reads_json_from_stdin() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deck"))
+        .args(["config", "apply", "fixture", "--json"])
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"commands": {"fromjson": {"argv": ["printf", "json"]}}}"#)
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["changed"], true);
+    assert_eq!(json["config"]["commands"]["fromjson"]["argv"][0], "printf");
 }

@@ -275,68 +275,6 @@ fn remove_stale_lock(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn write_default_deck_config(root: &Path) -> Result<PathBuf> {
-    let path = deck_config_path(root);
-    if path.exists() {
-        anyhow::bail!("{} already exists", path.display());
-    }
-
-    let name = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("project");
-    let body = format!(
-        r#"name = "{name}"
-
-[commands]
-test = "cargo test"
-fmt = "cargo fmt --all"
-
-[commands.serve]
-cmd = "cargo run"
-kind = "server"
-
-[workflows.check]
-steps = ["fmt", "test"]
-
-[tasks.next]
-title = "Replace this with your next project task"
-status = "todo"
-
-[plugins.example]
-cmd = "python3 scripts/deck_plugin.py"
-
-[sandbox.default]
-backend = "bwrap"
-network = false
-readonly_project = true
-writable = ["./target", "./tmp"]
-env = ["PATH", "HOME"]
-timeout_seconds = 60
-allow_shell = true
-
-[sandbox.locked]
-backend = "bwrap"
-network = false
-readonly_project = true
-writable = ["./target", "./tmp"]
-env = ["PATH"]
-timeout_seconds = 300
-allow_shell = false
-
-[sandbox.dev]
-backend = "bwrap"
-network = true
-readonly_project = false
-writable = []
-env = ["PATH", "HOME"]
-allow_shell = true
-"#
-    );
-    fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

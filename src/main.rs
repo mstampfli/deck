@@ -14,6 +14,7 @@ mod contracts;
 mod discover;
 mod errors;
 mod history;
+mod init;
 mod manifest;
 mod model;
 mod planner;

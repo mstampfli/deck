@@ -4,9 +4,10 @@
 //! through the shared config lock and atomic write path, for humans and
 //! agents alike.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::ValueEnum;
 
 use crate::config::{
@@ -20,6 +21,17 @@ use crate::selection::{load_projects, select_command, select_project};
 
 #[derive(Debug, clap::Subcommand)]
 pub enum ConfigCommand {
+    /// Apply a whole deck.toml-shaped document (TOML or JSON) in one atomic write
+    Apply {
+        project: String,
+        /// Path to the document; reads stdin when omitted
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        replace: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Add a shell-backed command
     AddCommand {
         project: String,
@@ -218,6 +230,12 @@ impl From<SandboxBackendArg> for SandboxBackend {
 
 pub fn run(action: ConfigCommand, json: bool) -> Result<()> {
     match action {
+        ConfigCommand::Apply {
+            project,
+            file,
+            replace,
+            dry_run,
+        } => apply(&project, file.as_deref(), replace, dry_run, json),
         ConfigCommand::AddCommand {
             project,
             name,
@@ -395,6 +413,151 @@ pub fn run(action: ConfigCommand, json: bool) -> Result<()> {
             |config, _project| remove_config_entry(&mut config.sandbox, "sandbox", &name),
         ),
     }
+}
+
+/// Merge a full configuration document into a project's deck.toml.
+///
+/// Every entry is validated with the same rules as the single-edit commands,
+/// collisions are collected and reported together (unless --replace), and the
+/// merged result lands through the shared lock in one atomic write.
+fn apply(
+    project_query: &str,
+    file: Option<&Path>,
+    replace: bool,
+    dry_run: bool,
+    json: bool,
+) -> Result<()> {
+    let raw = match file {
+        Some(path) => {
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?
+        }
+        None => {
+            let mut buffer = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buffer)
+                .context("reading configuration document from stdin")?;
+            buffer
+        }
+    };
+    let doc: DeckConfig = if raw.trim_start().starts_with('{') {
+        serde_json::from_str(&raw).context("parsing JSON configuration document")?
+    } else {
+        toml::from_str(&raw).context("parsing TOML configuration document")?
+    };
+
+    let (projects, _, _) = load_projects(&[])?;
+    let project = select_project(&projects, project_query)?;
+    let _lock = lock_deck_config(&project.root)?;
+    let mut config = load_or_default_deck_config(&project.root, &project.name)?;
+
+    let mut conflicts = Vec::new();
+    let mut conflict = |kind: &str, name: &str, exists: bool| {
+        if exists && !replace {
+            conflicts.push(format!("{kind} {name:?}"));
+        }
+    };
+
+    for (name, entry) in &doc.commands {
+        validate_config_key("command", name)?;
+        entry
+            .command()
+            .with_context(|| format!("command {name:?}"))?;
+        if let Some(argv) = entry.argv() {
+            validate_argv(argv).with_context(|| format!("command {name:?}"))?;
+        }
+        if entry.port().is_some() && !matches!(entry.kind(), ConfigCommandKind::Server) {
+            anyhow::bail!("command {name:?} sets a port but is not kind=server");
+        }
+        conflict("command", name, config.commands.contains_key(name));
+    }
+    for (name, workflow) in &doc.workflows {
+        validate_config_key("workflow", name)?;
+        if workflow.steps.is_empty() {
+            anyhow::bail!("workflow {name:?} must contain at least one step");
+        }
+        for step in &workflow.steps {
+            validate_config_key("workflow step", step)?;
+            let known = doc.commands.contains_key(step)
+                || config.commands.contains_key(step)
+                || select_command(project, step).is_ok();
+            if !known {
+                anyhow::bail!("workflow {name:?} references unknown command {step:?}");
+            }
+        }
+        conflict("workflow", name, config.workflows.contains_key(name));
+    }
+    for name in doc.plugins.keys() {
+        validate_config_key("plugin", name)?;
+        conflict("plugin", name, config.plugins.contains_key(name));
+    }
+    for (name, profile) in &doc.sandbox {
+        validate_config_key("sandbox", name)?;
+        for path in &profile.writable {
+            crate::sandbox::validate_writable_path(path)?;
+        }
+        for env in &profile.env {
+            crate::sandbox::validate_env_name(env)?;
+        }
+        if let Some(timeout_seconds) = profile.timeout_seconds {
+            crate::sandbox::validate_timeout_seconds(timeout_seconds)?;
+        }
+        conflict("sandbox", name, config.sandbox.contains_key(name));
+    }
+    for name in doc.tasks.keys() {
+        validate_config_key("task", name)?;
+        conflict("task", name, config.tasks.contains_key(name));
+    }
+    if !conflicts.is_empty() {
+        anyhow::bail!(
+            "{} already exists; pass --replace to overwrite",
+            conflicts.join(", ")
+        );
+    }
+
+    let mut changed = false;
+    if doc.name.is_some() && doc.name != config.name {
+        config.name = doc.name.clone();
+        changed = true;
+    }
+    changed |= !doc.commands.is_empty()
+        || !doc.workflows.is_empty()
+        || !doc.plugins.is_empty()
+        || !doc.sandbox.is_empty()
+        || !doc.tasks.is_empty();
+    config.commands.extend(doc.commands);
+    config.workflows.extend(doc.workflows);
+    config.plugins.extend(doc.plugins);
+    config.sandbox.extend(doc.sandbox);
+    config.tasks.extend(doc.tasks);
+    if doc.paths.root.is_some() || doc.paths.logs.is_some() || doc.paths.notes.is_some() {
+        changed = true;
+        if doc.paths.root.is_some() {
+            config.paths.root = doc.paths.root;
+        }
+        if doc.paths.logs.is_some() {
+            config.paths.logs = doc.paths.logs;
+        }
+        if doc.paths.notes.is_some() {
+            config.paths.notes = doc.paths.notes;
+        }
+    }
+
+    let path = deck_config_path(&project.root);
+    if changed && !dry_run {
+        write_deck_config(&project.root, &config)?;
+    }
+    emit(
+        &ConfigEditJson {
+            ok: true,
+            project: project_ref(project),
+            path,
+            action: "apply",
+            dry_run,
+            changed,
+            config,
+        },
+        json,
+    )
 }
 
 fn edit_project_config<F>(

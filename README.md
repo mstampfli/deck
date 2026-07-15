@@ -139,6 +139,18 @@ deck config add-sandbox deck locked --preset locked --replace
 deck config remove-sandbox deck locked
 ```
 
+For a whole setup at once, `deck config apply` takes a `deck.toml`-shaped
+document (TOML or JSON, from a file or stdin), validates every entry with the
+same rules as the single edits, and merges it in one locked atomic write.
+Collisions are reported together and require `--replace`; either the whole
+document lands or none of it does.
+
+```sh
+deck config apply my-project --file setup.toml
+deck config apply my-project --file setup.toml --dry-run
+cat setup.json | deck config apply my-project --json
+```
+
 ## Agents
 
 Deck has no separate agent namespace. Agents use the same commands as humans
@@ -154,7 +166,23 @@ vice versa. Two entry points matter:
 
 ## Project Config
 
-Add `deck.toml` to a project to override or add commands, workflows, tasks,
+Bootstrap a project in one shot: `deck init` writes a `deck.toml` seeded with
+the commands Deck detects (Cargo, npm, Make, just), and flags settle the other
+decisions in the same atomic write:
+
+```sh
+deck init
+deck init --sandbox locked
+deck init --sandbox dev --allow-shell false --server web:3000
+```
+
+`--sandbox` adds a profile named `default` from a preset, `--allow-shell`
+overrides that profile's shell policy, and `--server NAME[:PORT]` marks a
+detected command as a tracked server. With `--json` the command reports
+exactly what it wrote, including how many shell-backed commands a
+`allow_shell = false` profile would refuse to run.
+
+Add or edit `deck.toml` by hand to override or add commands, workflows, tasks,
 plugins, and sandbox profiles:
 
 ```toml

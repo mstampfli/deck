@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `deck init` is project-aware: it writes a `deck.toml` seeded with the
+  commands Deck detects (Cargo, npm, Make, just) and configures the rest in
+  the same pass via `--sandbox <preset>`, `--allow-shell`, and
+  `--server NAME[:PORT]`, replacing the old static example template.
+- `deck config apply`: merge a whole `deck.toml`-shaped document (TOML or
+  JSON, file or stdin) in one validated, locked, atomic write, with
+  `--dry-run` and `--replace`.
+
 ## 0.2.0 - 2026-07-15
 
 One unified CLI surface for humans and agents.

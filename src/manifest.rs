@@ -176,7 +176,8 @@ fn output_type(path: &str) -> Option<&'static str> {
         "sandbox doctor" => "SandboxDoctorJson",
         "tasks list" => "TaskListJson",
         "tasks add" | "tasks set" | "tasks remove" => "ConfigEditJson",
-        "config add-command"
+        "config apply"
+        | "config add-command"
         | "config add-argv-command"
         | "config remove-command"
         | "config add-workflow"

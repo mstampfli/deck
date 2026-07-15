@@ -9,12 +9,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::config::write_default_deck_config;
-use crate::config_edit::ConfigCommand;
+use crate::config_edit::{ConfigCommand, SandboxPresetArg};
 use crate::contracts::{
-    ClearRunsJson, CommandView, InitJson, LogsJson, PluginRegistryJson, PluginRunJson,
-    ProcessActionJson, ProjectCommands, ProjectPlugins, ProjectStatus, ProjectWorkflows, ScanJson,
-    ToolOutputJson, emit, print_error_json, project_list_item, project_ref,
+    ClearRunsJson, CommandView, LogsJson, PluginRegistryJson, PluginRunJson, ProcessActionJson,
+    ProjectCommands, ProjectPlugins, ProjectStatus, ProjectWorkflows, ScanJson, ToolOutputJson,
+    emit, print_error_json, project_list_item, project_ref,
 };
 use crate::model::Project;
 use crate::process::{start_process, stop_process};
@@ -141,8 +140,23 @@ enum Command {
     },
     /// Open the interactive terminal UI (the default when no command is given)
     Tui,
-    /// Write a starter deck.toml in the current directory
-    Init,
+    /// Write a deck.toml seeded with the project's detected commands
+    Init {
+        /// Add a sandbox profile named "default" from a preset
+        #[arg(long, value_enum)]
+        sandbox: Option<SandboxPresetArg>,
+        /// Set allow_shell on that profile (requires --sandbox)
+        #[arg(
+            long,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true"
+        )]
+        allow_shell: Option<bool>,
+        /// Mark a detected command as a server: NAME[:PORT] (repeatable)
+        #[arg(long = "server")]
+        servers: Vec<String>,
+    },
     /// Clear recorded run history
     ClearRuns,
 }
@@ -287,10 +301,11 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
             }
             crate::tui::run_tui()
         }
-        Command::Init => {
-            let path = write_default_deck_config(&std::env::current_dir()?)?;
-            emit(&InitJson { ok: true, path }, json)
-        }
+        Command::Init {
+            sandbox,
+            allow_shell,
+            servers,
+        } => crate::init::init(sandbox, allow_shell, &servers, json),
         Command::ClearRuns => {
             let paths = state_paths()?;
             let mut state = State::load(&paths)?;
