@@ -1,0 +1,338 @@
+# Deck
+
+Deck is a terminal cockpit for existing development tools. It discovers local
+projects, detects common commands, shows git/tool status, runs commands from one
+place, and records local run logs.
+
+Deck does not replace git, cargo, npm, docker, gh, shell tools, or agents. It
+wraps them, remembers project context, and exposes a consistent CLI and JSON
+surface.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md): crate/module map, runtime flow, data
+  ownership, extension rules, and verification.
+- `deck agent capabilities`: machine-readable command manifest for agents.
+- `deck context PROJECT --json`: deterministic project context bundle.
+
+## Build and Verify
+
+```sh
+/home/parrot/.cargo/bin/cargo build
+```
+
+The project pins the local `stable` rustup toolchain in `rust-toolchain.toml`.
+It does not change the global Rust default.
+
+Full verification:
+
+```sh
+/home/parrot/.cargo/bin/cargo fmt --all --check
+/home/parrot/.cargo/bin/cargo test
+/home/parrot/.cargo/bin/cargo clippy --all-targets -- -D warnings
+/home/parrot/.cargo/bin/cargo doc --no-deps
+```
+
+## Basic Usage
+
+```sh
+./target/debug/deck scan /home/parrot
+./target/debug/deck list
+./target/debug/deck commands deck
+./target/debug/deck run deck check
+./target/debug/deck start my-project serve
+./target/debug/deck ps
+./target/debug/deck stop my-project serve
+./target/debug/deck git deck commits
+./target/debug/deck docker
+./target/debug/deck gh deck issues
+./target/debug/deck search deck CommandSpec
+./target/debug/deck ssh-hosts
+./target/debug/deck journal ssh --lines 50
+./target/debug/deck workflow list deck
+./target/debug/deck workflow run deck check
+./target/debug/deck recent deck --json
+./target/debug/deck rerun deck check --dry-run --json
+./target/debug/deck plugin add health --cmd "python3 ./scripts/health.py"
+./target/debug/deck plugin add-path local ./scripts/deck_plugin.sh
+./target/debug/deck plugin list deck
+./target/debug/deck plugin manifest deck local
+./target/debug/deck plugin run deck local hello
+./target/debug/deck context deck
+./target/debug/deck context deck --json --output /tmp/deck-context.json
+./target/debug/deck tasks list deck --json
+./target/debug/deck tui
+```
+
+Run logs and scan state are stored under the XDG state directory, normally:
+
+```text
+~/.local/state/deck/
+```
+
+## Agent JSON
+
+Commands with `--json` are intended to be consumed by agents and scripts. They
+print structured JSON on stdout.
+
+```sh
+./target/debug/deck list --json
+./target/debug/deck commands deck --json
+./target/debug/deck status deck --json
+./target/debug/deck ps --json
+./target/debug/deck run deck check --dry-run --json
+./target/debug/deck run deck check --json
+./target/debug/deck workflow list deck --json
+./target/debug/deck workflow run deck check --dry-run --json
+./target/debug/deck workflow run deck check --json
+./target/debug/deck plugin list --json
+./target/debug/deck plugin list deck --json
+```
+
+JSON-mode failures use the same shape:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "kind": "unknown_project",
+    "message": "no project matches \"missing\""
+  }
+}
+```
+
+## Agent API
+
+`deck agent` is the stable machine-facing namespace. Every command prints JSON
+and structured errors.
+
+```sh
+./target/debug/deck agent capabilities
+./target/debug/deck agent projects
+./target/debug/deck agent inspect deck
+./target/debug/deck agent plan deck check
+./target/debug/deck agent run deck check --dry-run
+./target/debug/deck agent run deck check
+./target/debug/deck agent workflow deck check --dry-run
+./target/debug/deck agent workflow deck check
+./target/debug/deck agent processes
+./target/debug/deck agent processes deck
+./target/debug/deck agent session start deck
+./target/debug/deck agent config add-command deck serve --cmd "npm run dev" --kind server --port 3000 --dry-run
+./target/debug/deck agent config add-command deck serve --cmd "npm run dev" --kind server --port 3000
+./target/debug/deck agent config add-argv-command deck test-direct --arg cargo --arg test
+./target/debug/deck agent config remove-command deck serve
+./target/debug/deck agent config add-workflow deck ship --step fmt --step test
+./target/debug/deck agent config remove-workflow deck ship
+./target/debug/deck agent config add-plugin deck health --cmd "python3 scripts/health.py"
+./target/debug/deck agent config add-plugin-path deck local ./scripts/deck_plugin.sh
+./target/debug/deck agent config remove-plugin deck health
+./target/debug/deck agent config add-sandbox deck locked --writable ./target --env PATH --timeout-seconds 120 --allow-shell false
+./target/debug/deck agent config add-sandbox deck locked --preset locked --replace
+./target/debug/deck agent config remove-sandbox deck locked
+./target/debug/deck sandbox doctor --json
+./target/debug/deck sandbox plan deck test --json
+./target/debug/deck sandbox run deck test --json
+```
+
+Project config edits are serialized with a project-local lock and written by
+atomic rename. Add operations fail on existing names unless `--replace` is
+passed.
+
+`deck agent session start PROJECT` is the highest-level startup command for
+external agents. It returns a context bundle, command safety metadata, sandbox
+profiles, tasks, and suggested next Deck commands.
+
+## Project Config
+
+Add `deck.toml` to a project to override or add commands, workflows, tasks,
+plugins, and sandbox profiles:
+
+```toml
+name = "my-project"
+
+[commands]
+test = "cargo test"
+fmt = "cargo fmt --all"
+serve = "npm run dev"
+
+[commands.web]
+cmd = "npm run dev"
+kind = "server"
+port = 3000
+
+[commands.direct-test]
+argv = ["cargo", "test"]
+
+[workflows.check]
+steps = ["fmt", "test"]
+
+[tasks.next]
+title = "Ship the first useful version"
+status = "todo"
+
+[plugins.health]
+cmd = "python3 scripts/health.py"
+```
+
+String commands are one-shot commands. Table commands can set `kind = "server"`
+so Deck can start, stop, restart, and track them.
+
+Prefer `argv = [...]` for commands that should run safely in locked sandbox
+profiles or be consumed by agents. `cmd = "..."` remains useful for shell-heavy
+developer commands.
+
+## Sandbox
+
+Sandboxing is explicit and opt-in. Normal `deck run` is unchanged. Use
+`deck sandbox ...` when you want Deck to build an OS-level sandbox around a
+registered command.
+
+```toml
+[sandbox.default]
+backend = "bwrap"
+network = false
+readonly_project = true
+writable = ["./target", "./tmp"]
+env = ["PATH"]
+timeout_seconds = 60
+allow_shell = true
+```
+
+```sh
+./target/debug/deck sandbox plan my-project test --json
+./target/debug/deck sandbox run my-project test --json
+./target/debug/deck sandbox run my-project test --profile default
+./target/debug/deck sandbox run my-project test --timeout-seconds 10
+```
+
+The first backend is Bubblewrap (`bwrap`). Deck validates writable paths before
+execution: they must be project-relative and cannot escape the project with
+`..`. If no sandbox profile exists, explicit sandbox commands use a strict
+default profile: bwrap backend, no network, read-only project, writable
+`./target` and `./tmp`, and only `PATH` passed through. Set `allow_shell = false`
+with `argv = [...]` commands when a profile should run direct executables only.
+`deck sandbox plan` redacts environment values in the displayed argv.
+
+Useful presets are available through the agent config API:
+
+- `locked`: no network, read-only project, `./target`/`./tmp` writable, shell disabled
+- `test`: no network, read-only project, `./target`/`./tmp` writable, shell allowed
+- `dev`: network allowed, writable project, shell allowed
+
+`deck sandbox doctor --json` checks whether Bubblewrap is installed, whether basic
+filesystem sandboxing works, and whether network isolation is blocked by a parent
+environment such as an outer command sandbox.
+
+## Tasks and History
+
+Tasks are project-local entries stored in `deck.toml`:
+
+```sh
+./target/debug/deck tasks list my-project
+./target/debug/deck tasks add my-project ship --title "Ship v1" --status doing
+./target/debug/deck tasks set my-project ship --status done
+./target/debug/deck tasks remove my-project ship
+```
+
+Run history uses Deck's existing state:
+
+```sh
+./target/debug/deck recent [PROJECT] --json
+./target/debug/deck rerun [PROJECT] [COMMAND] --dry-run --json
+```
+
+`deck agent session start PROJECT` emits a single JSON startup bundle for external
+agents: context, command safety metadata, sandbox profile summaries, tasks, and
+suggested follow-up Deck commands.
+
+## Tool Adapters
+
+Deck wraps existing tools instead of replacing them:
+
+- `deck git PROJECT diff|branches|commits`
+- `deck docker [PROJECT]`
+- `deck gh PROJECT issues`
+- `deck search PROJECT QUERY [--limit N]`
+- `deck ssh-hosts`
+- `deck journal [UNIT] [--lines N]`
+
+## Workflows
+
+Workflows run existing one-shot commands in order and stop at the first failing
+step:
+
+```toml
+[workflows.ship]
+steps = ["fmt", "test"]
+```
+
+```sh
+./target/debug/deck workflow list my-project
+./target/debug/deck workflow run my-project ship
+```
+
+## Plugins
+
+Plugins are explicitly registered commands. They do not need a special filename
+and do not need to be on `PATH`.
+
+Global registry:
+
+```sh
+./target/debug/deck plugin add NAME --cmd "python3 /path/to/plugin.py"
+./target/debug/deck plugin add-path NAME /path/to/plugin
+./target/debug/deck plugin remove NAME
+```
+
+Project-local `deck.toml`:
+
+```toml
+[plugins.health]
+cmd = "python3 scripts/health.py"
+```
+
+Protocol:
+
+```sh
+PLUGIN manifest --json
+PLUGIN panels --json --project /path/to/project
+PLUGIN actions --json --project /path/to/project
+PLUGIN run ACTION --project /path/to/project
+```
+
+Deck commands:
+
+```sh
+./target/debug/deck plugin list [PROJECT]
+./target/debug/deck plugin manifest PROJECT NAME
+./target/debug/deck plugin panels PROJECT NAME
+./target/debug/deck plugin actions PROJECT NAME
+./target/debug/deck plugin run PROJECT NAME ACTION
+```
+
+## Context Bundles
+
+Context bundles are deterministic project snapshots for agents and external
+tools. They include project metadata, git status, commands, workflows, plugins,
+tasks, command safety metadata, processes, recent runs, and bounded snippets of
+key project files.
+
+```sh
+./target/debug/deck context PROJECT
+./target/debug/deck context PROJECT --json
+./target/debug/deck context PROJECT --json --output /tmp/context.json
+```
+
+## Codebase Layout
+
+The codebase is a single binary crate. The main module groups are:
+
+- CLI and agent routing: `cli.rs`, `agent.rs`, `agent_session.rs`
+- Core data and contracts: `model.rs`, `config.rs`, `contracts.rs`, `errors.rs`
+- Discovery and selection: `discover.rs`, `adapters.rs`, `selection.rs`
+- Execution and state: `commands.rs`, `process.rs`, `workflow.rs`, `state.rs`
+- Platform integrations: `tools.rs`, `plugin.rs`, `sandbox.rs`
+- Product surfaces: `context.rs`, `tasks.rs`, `history.rs`, `safety.rs`, `tui.rs`
+
+See [Architecture](docs/ARCHITECTURE.md) for the full module-by-module guide.
