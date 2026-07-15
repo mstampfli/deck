@@ -10,9 +10,8 @@ few stable primitives:
 - Output contracts in `contracts.rs`: every command output is one struct with a
   JSON form (serde) and a human form (`Render`), printed through `emit`.
 
-The CLI is intentionally thin. Most commands parse arguments in `cli.rs` or
-`agent.rs`, select projects through `selection.rs`, then delegate to a feature
-module.
+The CLI is intentionally thin. Commands parse arguments in `cli.rs`, select
+projects through `selection.rs`, then delegate to a feature module.
 
 ## Runtime Flow
 
@@ -28,8 +27,8 @@ Typical command execution:
 6. `process.rs` executes commands, streams output, and writes run logs.
 7. `state.rs` records run summaries and process records under XDG state.
 
-Agent-facing commands follow the same path, but force JSON through `agent.rs`
-and `contracts.rs`.
+Agents follow the same path as humans: there is no separate agent namespace.
+The global `--json` flag switches every command to its structured rendering.
 
 ## Module Map
 
@@ -37,12 +36,11 @@ and `contracts.rs`.
 | --- | --- |
 | `main.rs` | Binary entry point and module registration. |
 | `cli.rs` | Top-level CLI parsing, the global `--json` flag, dispatch, and JSON-error selection. |
-| `agent.rs` | Stable machine-facing `deck agent` namespace and capability manifest. |
-| `agent_session.rs` | One-shot agent startup bundle combining context, tasks, safety, and sandbox profiles. |
 | `adapters.rs` | Tool and config adapters that turn external project files into `CommandSpec` values. |
+| `capabilities.rs` | Machine-readable manifest of every command, its argv shape, and output type. |
 | `commands.rs` | Shared handlers for project listing, command execution, process listing, and workflows. |
 | `config.rs` | `deck.toml` schema, default config generation, atomic writes, and config locking. |
-| `config_edit.rs` | Agent-safe mutations of project config: commands, workflows, plugins, and sandbox profiles. |
+| `config_edit.rs` | `deck config` mutations of project config: commands, workflows, plugins, and sandbox profiles. |
 | `context.rs` | Deterministic context bundles for agents and external tools. |
 | `contracts.rs` | Output contracts: serializable shapes, their human renderings, and `emit`. |
 | `discover.rs` | Filesystem scanning and project detection. |
@@ -56,6 +54,7 @@ and `contracts.rs`.
 | `sandbox.rs` | Bubblewrap sandbox planning, execution, diagnostics, policy validation, and presets. |
 | `selection.rs` | Shared loading/filtering/project-command selection helpers. |
 | `state.rs` | XDG state load/save, run history, process records, and global plugin registry. |
+| `summary.rs` | Project startup bundle: context, command safety, sandbox profiles, and suggested next commands. |
 | `tasks.rs` | Project-local task CRUD backed by `deck.toml`. |
 | `tools.rs` | Thin wrappers for existing tools such as git, docker, gh, rg-like search, ssh, and journalctl. |
 | `tui.rs` | Terminal UI entry point and navigation. |
@@ -115,19 +114,19 @@ sandbox.
 
 ## Agent Surface
 
-Agent and script consumers should prefer:
+Agents use the same commands as humans plus the global `--json` flag; a command
+is only allowed under a machine-only surface if a human genuinely cannot use it.
+Today that is exactly one command: `deck capabilities`, the manifest agents read
+to discover the CLI. The usual bootstrap sequence is:
 
-- `deck agent capabilities`
-- `deck agent projects`
-- `deck agent inspect PROJECT`
-- `deck agent session start PROJECT`
-- `deck commands PROJECT --json`
-- `deck context PROJECT --json`
-- `deck sandbox plan PROJECT COMMAND --json`
-- `deck sandbox doctor --json`
+- `deck capabilities`: discover commands, argv shapes, and output types.
+- `deck summary PROJECT --json`: one startup bundle with context, command
+  safety, sandbox profiles, tasks, and suggested next commands.
+- Any other command with `--json` as needed.
 
-All agent-facing failures should use the shared JSON error shape from
-`contracts.rs`.
+`--json` failures use the shared error envelope from `contracts.rs` and exit
+nonzero. A failed run/workflow/sandbox command prints exactly one result
+document (`ok: false`) instead of a second error document.
 
 ## Adding Features
 
@@ -137,8 +136,9 @@ Use this checklist for new features:
 2. Keep persistent schemas in `config.rs` or `state.rs`, not ad hoc files.
 3. Add output structs to `contracts.rs` (or the owning module) and implement
    `Render` so the command has both JSON and human forms by construction.
-4. Route CLI parsing through `cli.rs` or `agent.rs`, but keep behavior in a
-   focused module.
+4. Route CLI parsing through `cli.rs`, but keep behavior in a focused module.
+   Never add a machine-only command unless a human genuinely cannot use it;
+   `--json` is the machine rendering of the one shared surface.
 5. Use `selection.rs` for loading and selecting projects/commands.
 6. Add unit tests for the primitive and integration tests for public CLI behavior.
 7. Update `README.md` and this file when the user-facing or module surface changes.

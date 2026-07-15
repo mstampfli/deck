@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::agent::AgentCommand;
 use crate::config::write_default_deck_config;
+use crate::config_edit::ConfigCommand;
 use crate::contracts::{
     ClearRunsJson, CommandView, InitJson, LogsJson, PluginRegistryJson, PluginRunJson,
     ProcessActionJson, ProjectCommands, ProjectPlugins, ProjectStatus, ProjectWorkflows, ScanJson,
@@ -129,10 +129,11 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    Agent {
+    Config {
         #[command(subcommand)]
-        action: AgentCommand,
+        action: ConfigCommand,
     },
+    Capabilities,
     Tui,
     Init,
     ClearRuns,
@@ -213,12 +214,11 @@ pub fn run() -> Result<()> {
     };
     let json = args.json;
     let command = args.command.unwrap_or(Command::Tui);
-    let json_errors = json || matches!(command, Command::Agent { .. });
     if let Err(err) = dispatch(command, json) {
         if err.downcast_ref::<crate::errors::Reported>().is_some() {
             std::process::exit(1);
         }
-        if json_errors {
+        if json {
             print_error_json(crate::errors::classify(&err).as_str(), err.to_string())?;
             std::process::exit(1);
         }
@@ -272,7 +272,8 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
             command,
             dry_run,
         } => crate::history::rerun(project.as_deref(), command.as_deref(), json, dry_run),
-        Command::Agent { action } => crate::agent::run(action),
+        Command::Config { action } => crate::config_edit::run(action, json),
+        Command::Capabilities => crate::capabilities::capabilities(),
         Command::Tui => {
             if json {
                 anyhow::bail!("the TUI is interactive and has no JSON output");
@@ -653,6 +654,5 @@ fn status(project_query: Option<&str>, json: bool) -> Result<()> {
 }
 
 fn raw_args_want_json_error() -> bool {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    args.iter().any(|arg| arg == "--json") || args.first().is_some_and(|arg| arg == "agent")
+    std::env::args().skip(1).any(|arg| arg == "--json")
 }

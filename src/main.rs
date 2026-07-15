@@ -1,11 +1,11 @@
 //! Deck is a terminal cockpit for local development projects.
 //!
 //! The binary is organized as focused modules around project discovery,
-//! command execution, sandboxing, context bundles, and agent-facing JSON APIs.
+//! command execution, sandboxing, context bundles, and dual JSON/human output.
 //! See `docs/ARCHITECTURE.md` for the full module map and extension rules.
 
 mod adapters;
-mod agent;
+mod capabilities;
 mod cli;
 mod commands;
 mod config;

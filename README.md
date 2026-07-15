@@ -19,7 +19,9 @@ Deck is licensed under either of:
 
 - [Architecture](docs/ARCHITECTURE.md): crate/module map, runtime flow, data
   ownership, extension rules, and verification.
-- `deck agent capabilities`: machine-readable command manifest for agents.
+- `deck capabilities`: machine-readable command manifest for agents.
+- `deck summary PROJECT`: one-screen project overview (add `--json` for the
+  full startup bundle).
 - `deck context PROJECT --json`: deterministic project context bundle.
 
 ## Build and Verify
@@ -109,47 +111,38 @@ Failures before a result exists use the shared error envelope:
 }
 ```
 
-## Agent API
+## Config Editing
 
-`deck agent` is the stable machine-facing namespace. Every command prints JSON
-and structured errors.
+`deck config` edits a project's `deck.toml` from the CLI, for humans and agents
+alike. Edits are serialized with a project-local lock and written by atomic
+rename. Add operations fail on existing names unless `--replace` is passed, and
+`--dry-run` previews any edit.
 
 ```sh
-./target/debug/deck agent capabilities
-./target/debug/deck agent projects
-./target/debug/deck agent inspect deck
-./target/debug/deck agent plan deck check
-./target/debug/deck agent run deck check --dry-run
-./target/debug/deck agent run deck check
-./target/debug/deck agent workflow deck check --dry-run
-./target/debug/deck agent workflow deck check
-./target/debug/deck agent processes
-./target/debug/deck agent processes deck
-./target/debug/deck agent session start deck
-./target/debug/deck agent config add-command deck serve --cmd "npm run dev" --kind server --port 3000 --dry-run
-./target/debug/deck agent config add-command deck serve --cmd "npm run dev" --kind server --port 3000
-./target/debug/deck agent config add-argv-command deck test-direct --arg cargo --arg test
-./target/debug/deck agent config remove-command deck serve
-./target/debug/deck agent config add-workflow deck ship --step fmt --step test
-./target/debug/deck agent config remove-workflow deck ship
-./target/debug/deck agent config add-plugin deck health --cmd "python3 scripts/health.py"
-./target/debug/deck agent config add-plugin-path deck local ./scripts/deck_plugin.sh
-./target/debug/deck agent config remove-plugin deck health
-./target/debug/deck agent config add-sandbox deck locked --writable ./target --env PATH --timeout-seconds 120 --allow-shell false
-./target/debug/deck agent config add-sandbox deck locked --preset locked --replace
-./target/debug/deck agent config remove-sandbox deck locked
-./target/debug/deck sandbox doctor --json
-./target/debug/deck sandbox plan deck test --json
-./target/debug/deck sandbox run deck test --json
+./target/debug/deck config add-command deck serve --cmd "npm run dev" --kind server --port 3000
+./target/debug/deck config add-argv-command deck test-direct --arg cargo --arg test
+./target/debug/deck config remove-command deck serve
+./target/debug/deck config add-workflow deck ship --step fmt --step test
+./target/debug/deck config remove-workflow deck ship
+./target/debug/deck config add-plugin deck health --cmd "python3 scripts/health.py"
+./target/debug/deck config add-plugin-path deck local ./scripts/deck_plugin.sh
+./target/debug/deck config remove-plugin deck health
+./target/debug/deck config add-sandbox deck locked --writable ./target --env PATH --timeout-seconds 120 --allow-shell false
+./target/debug/deck config add-sandbox deck locked --preset locked --replace
+./target/debug/deck config remove-sandbox deck locked
 ```
 
-Project config edits are serialized with a project-local lock and written by
-atomic rename. Add operations fail on existing names unless `--replace` is
-passed.
+## Agents
 
-`deck agent session start PROJECT` is the highest-level startup command for
-external agents. It returns a context bundle, command safety metadata, sandbox
-profiles, tasks, and suggested next Deck commands.
+Deck has no separate agent namespace. Agents use the same commands as humans
+and add the global `--json` flag; anything a human can do, an agent can do, and
+vice versa. Two entry points matter:
+
+- `deck capabilities`: machine-readable manifest of every command, its argv
+  shape, and its output type. This is the only always-JSON command.
+- `deck summary PROJECT --json`: the highest-level startup bundle, with the
+  project context, command safety metadata, sandbox profiles, tasks, and
+  suggested next Deck commands.
 
 ## Project Config
 
@@ -222,7 +215,7 @@ default profile: bwrap backend, no network, read-only project, writable
 with `argv = [...]` commands when a profile should run direct executables only.
 `deck sandbox plan` redacts environment values in the displayed argv.
 
-Useful presets are available through the agent config API:
+Useful presets are available through `deck config add-sandbox --preset`:
 
 - `locked`: no network, read-only project, `./target`/`./tmp` writable, shell disabled
 - `test`: no network, read-only project, `./target`/`./tmp` writable, shell allowed
@@ -250,9 +243,10 @@ Run history uses Deck's existing state:
 ./target/debug/deck rerun [PROJECT] [COMMAND] --dry-run --json
 ```
 
-`deck agent session start PROJECT` emits a single JSON startup bundle for external
-agents: context, command safety metadata, sandbox profile summaries, tasks, and
-suggested follow-up Deck commands.
+`deck summary PROJECT` renders the same information as a one-screen overview;
+with `--json` it emits a single startup bundle: context, command safety
+metadata, sandbox profile summaries, tasks, and suggested follow-up Deck
+commands.
 
 ## Tool Adapters
 
@@ -336,11 +330,11 @@ key project files.
 
 The codebase is a single binary crate. The main module groups are:
 
-- CLI and agent routing: `cli.rs`, `agent.rs`, `agent_session.rs`
+- CLI routing and the capability manifest: `cli.rs`, `capabilities.rs`
 - Core data and contracts: `model.rs`, `config.rs`, `contracts.rs`, `errors.rs`
 - Discovery and selection: `discover.rs`, `adapters.rs`, `selection.rs`
 - Execution and state: `commands.rs`, `process.rs`, `workflow.rs`, `state.rs`
 - Platform integrations: `tools.rs`, `plugin.rs`, `sandbox.rs`
-- Product surfaces: `context.rs`, `tasks.rs`, `history.rs`, `safety.rs`, `tui.rs`
+- Product surfaces: `context.rs`, `summary.rs`, `tasks.rs`, `history.rs`, `safety.rs`, `tui.rs`
 
 See [Architecture](docs/ARCHITECTURE.md) for the full module-by-module guide.

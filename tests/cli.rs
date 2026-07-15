@@ -242,7 +242,23 @@ fn summary_renders_for_humans_and_agents() {
 }
 
 #[test]
-fn agent_session_contains_context_and_safety() {
+fn capabilities_manifest_lists_the_full_surface() {
+    let state = tempfile::tempdir().unwrap();
+
+    let output = deck(state.path(), &["capabilities"]);
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(json["name"], "deck");
+    assert_eq!(json["json"]["flag"], "--json");
+    let commands = json["commands"].as_object().unwrap();
+    for expected in ["summary", "config_add_command", "run", "sandbox_run"] {
+        assert!(commands.contains_key(expected), "missing {expected}");
+    }
+}
+
+#[test]
+fn config_edits_work_through_the_standard_namespace() {
     let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     fixture_project(project.path());
@@ -251,11 +267,37 @@ fn agent_session_contains_context_and_safety() {
         &["scan", project.path().to_str().unwrap()],
     ));
 
-    let output = deck(state.path(), &["agent", "session", "start", "fixture"]);
+    let output = deck(
+        state.path(),
+        &[
+            "config",
+            "add-command",
+            "fixture",
+            "serve",
+            "--cmd",
+            "printf serve",
+            "--kind",
+            "server",
+            "--port",
+            "3000",
+            "--json",
+        ],
+    );
     assert_success(&output);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-
     assert_eq!(json["ok"], true);
-    assert_eq!(json["context"]["project"]["name"], "fixture");
-    assert_eq!(json["commands"][0]["safety"]["direct_argv"], true);
+    assert_eq!(json["action"], "add-command");
+    assert_eq!(json["changed"], true);
+    assert_eq!(json["config"]["commands"]["serve"]["port"], 3000);
+
+    let output = deck(
+        state.path(),
+        &["config", "remove-command", "fixture", "serve"],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with("remove-command fixture: wrote "),
+        "unexpected stdout: {stdout}"
+    );
 }

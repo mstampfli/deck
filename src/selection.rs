@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::discover::discover_projects;
-use crate::model::{CommandSpec, Project, RunSummary};
+use crate::model::{CommandSpec, Project};
 use crate::state::{ProcessView, State, StatePaths, state_paths};
 
 pub fn load_projects(roots: &[PathBuf]) -> Result<(Vec<Project>, State, StatePaths)> {
@@ -71,30 +71,6 @@ pub fn select_command<'a>(project: &'a Project, query: &str) -> Result<&'a Comma
         .iter()
         .find(|command| command.name == query)
         .with_context(|| format!("{} has no command {query:?}", project.name))
-}
-
-pub fn context_project(project: &Project) -> crate::context::ContextProject {
-    crate::context::ContextProject {
-        id: project.id.clone(),
-        name: project.name.clone(),
-        root: project.root.clone(),
-        kinds: project
-            .kinds
-            .iter()
-            .map(|kind| kind.label().to_string())
-            .collect(),
-    }
-}
-
-pub fn recent_runs_for(project: &Project, state: &State, limit: usize) -> Vec<RunSummary> {
-    state
-        .runs
-        .iter()
-        .rev()
-        .filter(|run| run.project_id == project.id)
-        .take(limit)
-        .cloned()
-        .collect()
 }
 
 pub fn filtered_processes(state: &State, project: Option<&Project>) -> Vec<ProcessView> {

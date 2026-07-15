@@ -1,7 +1,8 @@
-//! Agent-safe mutations for project-local `deck.toml`.
+//! CLI mutations for project-local `deck.toml`.
 //!
-//! The commands in this module edit commands, workflows, plugins, and sandbox
-//! profiles through the shared config lock and atomic write path.
+//! `deck config` edits commands, workflows, plugins, and sandbox profiles
+//! through the shared config lock and atomic write path, for humans and
+//! agents alike.
 
 use std::path::PathBuf;
 
@@ -18,14 +19,14 @@ use crate::model::Project;
 use crate::selection::{load_projects, select_command, select_project};
 
 #[derive(Debug, clap::Subcommand)]
-pub enum AgentConfigCommand {
+pub enum ConfigCommand {
     AddCommand {
         project: String,
         name: String,
         #[arg(long)]
         cmd: String,
-        #[arg(long, default_value_t = AgentCommandKind::Once)]
-        kind: AgentCommandKind,
+        #[arg(long, default_value_t = CommandKindArg::Once)]
+        kind: CommandKindArg,
         #[arg(long)]
         port: Option<u16>,
         #[arg(long)]
@@ -38,8 +39,8 @@ pub enum AgentConfigCommand {
         name: String,
         #[arg(long = "arg", required = true)]
         argv: Vec<String>,
-        #[arg(long, default_value_t = AgentCommandKind::Once)]
-        kind: AgentCommandKind,
+        #[arg(long, default_value_t = CommandKindArg::Once)]
+        kind: CommandKindArg,
         #[arg(long)]
         port: Option<u16>,
         #[arg(long)]
@@ -98,9 +99,9 @@ pub enum AgentConfigCommand {
         project: String,
         name: String,
         #[arg(long)]
-        preset: Option<AgentSandboxPreset>,
-        #[arg(long, default_value_t = AgentSandboxBackend::Bwrap)]
-        backend: AgentSandboxBackend,
+        preset: Option<SandboxPresetArg>,
+        #[arg(long, default_value_t = SandboxBackendArg::Bwrap)]
+        backend: SandboxBackendArg,
         #[arg(
             long,
             action = clap::ArgAction::Set,
@@ -142,13 +143,13 @@ pub enum AgentConfigCommand {
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub enum AgentCommandKind {
+pub enum CommandKindArg {
     #[default]
     Once,
     Server,
 }
 
-impl std::fmt::Display for AgentCommandKind {
+impl std::fmt::Display for CommandKindArg {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::Once => "once",
@@ -157,39 +158,39 @@ impl std::fmt::Display for AgentCommandKind {
     }
 }
 
-impl From<AgentCommandKind> for ConfigCommandKind {
-    fn from(kind: AgentCommandKind) -> Self {
+impl From<CommandKindArg> for ConfigCommandKind {
+    fn from(kind: CommandKindArg) -> Self {
         match kind {
-            AgentCommandKind::Once => Self::Once,
-            AgentCommandKind::Server => Self::Server,
+            CommandKindArg::Once => Self::Once,
+            CommandKindArg::Server => Self::Server,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub enum AgentSandboxBackend {
+pub enum SandboxBackendArg {
     #[default]
     Bwrap,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum AgentSandboxPreset {
+pub enum SandboxPresetArg {
     Locked,
     Test,
     Dev,
 }
 
-impl From<AgentSandboxPreset> for SandboxPreset {
-    fn from(preset: AgentSandboxPreset) -> Self {
+impl From<SandboxPresetArg> for SandboxPreset {
+    fn from(preset: SandboxPresetArg) -> Self {
         match preset {
-            AgentSandboxPreset::Locked => Self::Locked,
-            AgentSandboxPreset::Test => Self::Test,
-            AgentSandboxPreset::Dev => Self::Dev,
+            SandboxPresetArg::Locked => Self::Locked,
+            SandboxPresetArg::Test => Self::Test,
+            SandboxPresetArg::Dev => Self::Dev,
         }
     }
 }
 
-impl std::fmt::Display for AgentSandboxBackend {
+impl std::fmt::Display for SandboxBackendArg {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::Bwrap => "bwrap",
@@ -197,17 +198,17 @@ impl std::fmt::Display for AgentSandboxBackend {
     }
 }
 
-impl From<AgentSandboxBackend> for SandboxBackend {
-    fn from(backend: AgentSandboxBackend) -> Self {
+impl From<SandboxBackendArg> for SandboxBackend {
+    fn from(backend: SandboxBackendArg) -> Self {
         match backend {
-            AgentSandboxBackend::Bwrap => Self::Bwrap,
+            SandboxBackendArg::Bwrap => Self::Bwrap,
         }
     }
 }
 
-pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
+pub fn run(action: ConfigCommand, json: bool) -> Result<()> {
     match action {
-        AgentConfigCommand::AddCommand {
+        ConfigCommand::AddCommand {
             project,
             name,
             cmd,
@@ -222,7 +223,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
             json,
             |config, _project| {
                 validate_config_key("command", &name)?;
-                if port.is_some() && !matches!(kind, AgentCommandKind::Server) {
+                if port.is_some() && !matches!(kind, CommandKindArg::Server) {
                     anyhow::bail!("command port requires kind=server");
                 }
                 insert_config_entry(&mut config.commands, &name, replace, || {
@@ -230,7 +231,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
                 })
             },
         ),
-        AgentConfigCommand::AddArgvCommand {
+        ConfigCommand::AddArgvCommand {
             project,
             name,
             argv,
@@ -246,7 +247,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
             |config, _project| {
                 validate_config_key("command", &name)?;
                 validate_argv(&argv)?;
-                if port.is_some() && !matches!(kind, AgentCommandKind::Server) {
+                if port.is_some() && !matches!(kind, CommandKindArg::Server) {
                     anyhow::bail!("command port requires kind=server");
                 }
                 insert_config_entry(&mut config.commands, &name, replace, || {
@@ -254,7 +255,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
                 })
             },
         ),
-        AgentConfigCommand::RemoveCommand {
+        ConfigCommand::RemoveCommand {
             project,
             name,
             dry_run,
@@ -265,7 +266,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
             json,
             |config, _project| remove_config_entry(&mut config.commands, "command", &name),
         ),
-        AgentConfigCommand::AddWorkflow {
+        ConfigCommand::AddWorkflow {
             project,
             name,
             steps,
@@ -284,7 +285,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
                 })
             },
         ),
-        AgentConfigCommand::RemoveWorkflow {
+        ConfigCommand::RemoveWorkflow {
             project,
             name,
             dry_run,
@@ -295,7 +296,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
             json,
             |config, _project| remove_config_entry(&mut config.workflows, "workflow", &name),
         ),
-        AgentConfigCommand::AddPlugin {
+        ConfigCommand::AddPlugin {
             project,
             name,
             cmd,
@@ -305,7 +306,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
             validate_config_key("plugin", &name)?;
             insert_config_entry(&mut config.plugins, &name, replace, || PluginConfig { cmd })
         }),
-        AgentConfigCommand::AddPluginPath {
+        ConfigCommand::AddPluginPath {
             project,
             name,
             path,
@@ -318,7 +319,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
                 insert_config_entry(&mut config.plugins, &name, replace, || PluginConfig { cmd })
             })
         }
-        AgentConfigCommand::RemovePlugin {
+        ConfigCommand::RemovePlugin {
             project,
             name,
             dry_run,
@@ -329,7 +330,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
             json,
             |config, _project| remove_config_entry(&mut config.plugins, "plugin", &name),
         ),
-        AgentConfigCommand::AddSandbox {
+        ConfigCommand::AddSandbox {
             project,
             name,
             preset,
@@ -372,7 +373,7 @@ pub fn run(action: AgentConfigCommand, json: bool) -> Result<()> {
                 })
             },
         ),
-        AgentConfigCommand::RemoveSandbox {
+        ConfigCommand::RemoveSandbox {
             project,
             name,
             dry_run,
@@ -419,8 +420,8 @@ where
     )
 }
 
-fn command_config(cmd: String, kind: AgentCommandKind, port: Option<u16>) -> CommandConfig {
-    if matches!(kind, AgentCommandKind::Once) && port.is_none() {
+fn command_config(cmd: String, kind: CommandKindArg, port: Option<u16>) -> CommandConfig {
+    if matches!(kind, CommandKindArg::Once) && port.is_none() {
         CommandConfig::Simple(cmd)
     } else {
         CommandConfig::Detailed(DetailedCommandConfig {
@@ -434,7 +435,7 @@ fn command_config(cmd: String, kind: AgentCommandKind, port: Option<u16>) -> Com
 
 fn argv_command_config(
     argv: Vec<String>,
-    kind: AgentCommandKind,
+    kind: CommandKindArg,
     port: Option<u16>,
 ) -> CommandConfig {
     CommandConfig::Detailed(DetailedCommandConfig {
@@ -446,8 +447,8 @@ fn argv_command_config(
 }
 
 struct SandboxConfigInput {
-    preset: Option<AgentSandboxPreset>,
-    backend: AgentSandboxBackend,
+    preset: Option<SandboxPresetArg>,
+    backend: SandboxBackendArg,
     network: Option<bool>,
     readonly_project: Option<bool>,
     writable: Vec<PathBuf>,
