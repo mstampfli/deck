@@ -22,7 +22,11 @@ use crate::selection::{load_projects, select_command, select_project, select_pro
 use crate::state::{State, state_paths};
 
 #[derive(Debug, Parser)]
-#[command(name = "deck", about = "A terminal cockpit for existing dev tools")]
+#[command(
+    name = "deck",
+    about = "A terminal cockpit for existing dev tools",
+    after_help = "Start with:\n  deck scan ~             index your projects\n  deck summary PROJECT    one-screen project overview\n\nAgents: every command accepts --json; run 'deck capabilities' for a\nmachine-readable manifest of the full surface."
+)]
 pub struct Args {
     /// Print structured JSON instead of human-readable text.
     #[arg(long, global = true)]
@@ -33,109 +37,114 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Scan {
-        roots: Vec<PathBuf>,
-    },
+    /// Discover projects under the given roots and remember them
+    Scan { roots: Vec<PathBuf> },
+    /// List all known projects
     List,
+    /// Show a project's detected and configured commands
     #[command(name = "commands")]
-    ShowCommands {
-        project: Option<String>,
-    },
+    ShowCommands { project: Option<String> },
+    /// Run a project command once and record the run
     Run {
         project: String,
         command: String,
         #[arg(long)]
         dry_run: bool,
     },
-    Start {
-        project: String,
-        command: String,
-    },
-    Stop {
-        project: String,
-        command: String,
-    },
-    Restart {
-        project: String,
-        command: String,
-    },
-    Ps {
-        project: Option<String>,
-    },
-    Logs {
-        project: String,
-        command: String,
-    },
+    /// Start a server command in the background
+    Start { project: String, command: String },
+    /// Stop a tracked background command
+    Stop { project: String, command: String },
+    /// Restart a tracked background command
+    Restart { project: String, command: String },
+    /// List tracked background processes
+    Ps { project: Option<String> },
+    /// Print the log of a tracked command
+    Logs { project: String, command: String },
+    /// Show git diff, branches, or commits for a project
     Git {
         project: String,
         #[arg(value_enum)]
         action: GitCliAction,
     },
-    Docker {
-        project: Option<String>,
-    },
+    /// Show docker containers, optionally scoped to a project
+    Docker { project: Option<String> },
+    /// Show GitHub information for a project via gh
     Gh {
         project: String,
         #[command(subcommand)]
         action: GhCommand,
     },
+    /// Search a project's files for text
     Search {
         project: String,
         query: String,
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
     },
+    /// List hosts from your SSH config
     SshHosts,
+    /// Show systemd journal entries
     Journal {
         unit: Option<String>,
         #[arg(short, long, default_value_t = 100)]
         lines: usize,
     },
+    /// List or run multi-step workflows
     Workflow {
         #[command(subcommand)]
         action: WorkflowCommand,
     },
+    /// Manage and run registered plugins
     Plugin {
         #[command(subcommand)]
         action: PluginCommand,
     },
+    /// Emit a deterministic project context bundle (markdown, or JSON with --json)
     Context {
         project: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    Status {
-        project: Option<String>,
-    },
-    Summary {
-        project: String,
-    },
+    /// Show git and process status per project
+    Status { project: Option<String> },
+    /// One-screen project overview; with --json, the full startup bundle for agents
+    Summary { project: String },
+    /// Plan, run, and diagnose Bubblewrap-sandboxed commands
     Sandbox {
         #[command(subcommand)]
         action: crate::sandbox::SandboxCommand,
     },
+    /// Manage project-local tasks stored in deck.toml
     Tasks {
         #[command(subcommand)]
         action: crate::tasks::TaskCommand,
     },
+    /// Show recent command runs
     Recent {
         project: Option<String>,
         #[arg(short, long, default_value_t = 10)]
         limit: usize,
     },
+    /// Re-run the most recent command, optionally scoped to a project
     Rerun {
         project: Option<String>,
         command: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
+    /// Edit a project's deck.toml: commands, workflows, plugins, sandbox profiles
     Config {
         #[command(subcommand)]
         action: ConfigCommand,
     },
+    /// Print the machine-readable command manifest for agents (always JSON)
     Capabilities,
+    /// Open the interactive terminal UI (the default when no command is given)
     Tui,
+    /// Write a starter deck.toml in the current directory
     Init,
+    /// Clear recorded run history
     ClearRuns,
 }
 
@@ -148,14 +157,15 @@ enum GitCliAction {
 
 #[derive(Debug, Subcommand)]
 enum GhCommand {
+    /// List open issues
     Issues,
 }
 
 #[derive(Debug, Subcommand)]
 enum WorkflowCommand {
-    List {
-        project: String,
-    },
+    /// List a project's workflows
+    List { project: String },
+    /// Run a workflow's steps in order, stopping at the first failure
     Run {
         project: String,
         workflow: String,
@@ -166,33 +176,25 @@ enum WorkflowCommand {
 
 #[derive(Debug, Subcommand)]
 enum PluginCommand {
+    /// Register a global plugin command
     Add {
         name: String,
         #[arg(long)]
         cmd: String,
     },
-    AddPath {
-        name: String,
-        path: PathBuf,
-    },
-    Remove {
-        name: String,
-    },
-    List {
-        project: Option<String>,
-    },
-    Manifest {
-        project: String,
-        plugin: String,
-    },
-    Panels {
-        project: String,
-        plugin: String,
-    },
-    Actions {
-        project: String,
-        plugin: String,
-    },
+    /// Register a global plugin from an executable path
+    AddPath { name: String, path: PathBuf },
+    /// Remove a global plugin
+    Remove { name: String },
+    /// List plugins, global or for one project
+    List { project: Option<String> },
+    /// Print a plugin's manifest
+    Manifest { project: String, plugin: String },
+    /// Print a plugin's panels
+    Panels { project: String, plugin: String },
+    /// Print a plugin's actions
+    Actions { project: String, plugin: String },
+    /// Run a plugin action
     Run {
         project: String,
         plugin: String,

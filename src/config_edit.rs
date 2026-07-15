@@ -20,6 +20,7 @@ use crate::selection::{load_projects, select_command, select_project};
 
 #[derive(Debug, clap::Subcommand)]
 pub enum ConfigCommand {
+    /// Add a shell-backed command
     AddCommand {
         project: String,
         name: String,
@@ -34,6 +35,7 @@ pub enum ConfigCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Add a direct argv command (safest in locked sandbox profiles)
     AddArgvCommand {
         project: String,
         name: String,
@@ -48,12 +50,14 @@ pub enum ConfigCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a command
     RemoveCommand {
         project: String,
         name: String,
         #[arg(long)]
         dry_run: bool,
     },
+    /// Add a workflow built from existing commands
     AddWorkflow {
         project: String,
         name: String,
@@ -64,12 +68,14 @@ pub enum ConfigCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a workflow
     RemoveWorkflow {
         project: String,
         name: String,
         #[arg(long)]
         dry_run: bool,
     },
+    /// Add a project plugin
     AddPlugin {
         project: String,
         name: String,
@@ -80,6 +86,7 @@ pub enum ConfigCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Add a project plugin from an executable path
     AddPluginPath {
         project: String,
         name: String,
@@ -89,12 +96,14 @@ pub enum ConfigCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a project plugin
     RemovePlugin {
         project: String,
         name: String,
         #[arg(long)]
         dry_run: bool,
     },
+    /// Add a sandbox profile, optionally from a preset
     AddSandbox {
         project: String,
         name: String,
@@ -134,6 +143,7 @@ pub enum ConfigCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a sandbox profile
     RemoveSandbox {
         project: String,
         name: String,

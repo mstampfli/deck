@@ -24,6 +24,7 @@ const DEFAULT_WRITABLE: &[&str] = &["./target", "./tmp"];
 
 #[derive(Debug, Subcommand)]
 pub enum SandboxCommand {
+    /// Show the sandbox plan for a command without running it
     Plan {
         project: String,
         command: String,
@@ -32,6 +33,7 @@ pub enum SandboxCommand {
         #[arg(long)]
         timeout_seconds: Option<u64>,
     },
+    /// Run a registered command inside the sandbox
     Run {
         project: String,
         command: String,
@@ -40,6 +42,7 @@ pub enum SandboxCommand {
         #[arg(long)]
         timeout_seconds: Option<u64>,
     },
+    /// Check whether sandboxing works in this environment
     Doctor,
 }
 

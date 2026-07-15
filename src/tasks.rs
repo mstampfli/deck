@@ -16,9 +16,9 @@ use crate::selection::{load_projects, select_project};
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommand {
-    List {
-        project: String,
-    },
+    /// List a project's tasks
+    List { project: String },
+    /// Add a task
     Add {
         project: String,
         name: String,
@@ -33,6 +33,7 @@ pub enum TaskCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Update a task's title, status, or notes
     Set {
         project: String,
         name: String,
@@ -45,6 +46,7 @@ pub enum TaskCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Remove a task
     Remove {
         project: String,
         name: String,
