@@ -23,6 +23,14 @@ pub trait Render: Serialize {
     fn human(&self, out: &mut dyn io::Write) -> io::Result<()>;
 }
 
+/// Render a value's human form into a string, for surfaces like the TUI that
+/// draw into panes instead of stdout.
+pub fn render_to_string<T: Render>(value: &T) -> String {
+    let mut out = Vec::new();
+    let _ = value.human(&mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Print `value` as pretty JSON or as human text, per the global `--json` flag.
 pub fn emit<T: Render>(value: &T, json: bool) -> Result<()> {
     if json {

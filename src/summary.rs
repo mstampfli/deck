@@ -12,8 +12,10 @@ use serde::Serialize;
 use crate::config::{SandboxConfig, load_deck_config};
 use crate::context::ContextBundle;
 use crate::contracts::{ProjectRef, Render, emit, project_ref};
+use crate::model::Project;
 use crate::safety::{CommandSafety, command_safety};
 use crate::selection::{load_projects, select_project};
+use crate::state::State;
 
 #[derive(Debug, Serialize)]
 pub struct SummaryJson<'a> {
@@ -41,7 +43,13 @@ struct SummarySandboxProfile {
 pub fn summary(project_query: &str, json: bool) -> Result<()> {
     let (projects, state, _) = load_projects(&[])?;
     let project = select_project(&projects, project_query)?;
-    let context = crate::context::build_context(project, &state)?;
+    let value = build(project, &state)?;
+    emit(&value, json)
+}
+
+/// Build the startup bundle for one project; the TUI renders it directly.
+pub fn build<'a>(project: &'a Project, state: &State) -> Result<SummaryJson<'a>> {
+    let context = crate::context::build_context(project, state)?;
     let commands = project
         .commands
         .iter()
@@ -60,23 +68,20 @@ pub fn summary(project_query: &str, json: bool) -> Result<()> {
         })
         .unwrap_or_default();
     let name = &project.name;
-    emit(
-        &SummaryJson {
-            ok: true,
-            generated_at: Utc::now(),
-            project: project_ref(project),
-            context,
-            commands,
-            sandbox_profiles,
-            suggested_next_commands: vec![
-                vec!["deck".into(), "commands".into(), name.clone()],
-                vec!["deck".into(), "tasks".into(), "list".into(), name.clone()],
-                vec!["deck".into(), "context".into(), name.clone()],
-                vec!["deck".into(), "sandbox".into(), "doctor".into()],
-            ],
-        },
-        json,
-    )
+    Ok(SummaryJson {
+        ok: true,
+        generated_at: Utc::now(),
+        project: project_ref(project),
+        context,
+        commands,
+        sandbox_profiles,
+        suggested_next_commands: vec![
+            vec!["deck".into(), "commands".into(), name.clone()],
+            vec!["deck".into(), "tasks".into(), "list".into(), name.clone()],
+            vec!["deck".into(), "context".into(), name.clone()],
+            vec!["deck".into(), "sandbox".into(), "doctor".into()],
+        ],
+    })
 }
 
 impl Render for SummaryJson<'_> {

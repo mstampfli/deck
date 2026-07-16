@@ -58,7 +58,7 @@ The global `--json` flag switches every command to its structured rendering.
 | `summary.rs` | Project startup bundle: context, command safety, sandbox profiles, and suggested next commands. |
 | `tasks.rs` | Project-local task CRUD backed by `deck.toml`. |
 | `tools.rs` | Thin wrappers for existing tools such as git, docker, gh, rg-like search, ssh, and journalctl. |
-| `tui.rs` | Terminal UI entry point and navigation. |
+| `tui.rs` | Interactive cockpit: renders via the shared `Render` impls and executes actions by running the deck CLI as streamed subprocesses. |
 | `workflow.rs` | Workflow selection and sequential workflow execution. |
 
 ## Data Ownership

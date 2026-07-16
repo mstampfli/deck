@@ -807,3 +807,19 @@ kind = "server"
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
+
+#[test]
+fn tui_refuses_to_run_without_a_terminal() {
+    let state = tempfile::tempdir().unwrap();
+
+    let output = deck(state.path(), &["tui"]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("interactive terminal"),
+        "unexpected stderr: {stderr}"
+    );
+    // No raw-mode escape sequences may leak when refused.
+    assert!(output.stdout.is_empty(), "stdout not empty");
+}

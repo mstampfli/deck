@@ -4,6 +4,13 @@
 
 ### Added
 
+- The TUI is a full cockpit on par with the CLI: filterable project list;
+  Summary, Commands, Workflows, Processes, Recent, and Output tabs; live
+  streamed command output with cancel; server start/stop; dry runs; log
+  viewing; reruns; a `:` bar that accepts any deck command line; and a `!`
+  shell in the project root. Actions run the deck binary itself, so TUI and
+  CLI cannot drift. The TUI refuses to start without an interactive
+  terminal and restores the terminal even on panic.
 - Context bundles include the agent-facing doc files: `ARCHITECTURE.md`
   (also under `docs/`), `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, and
   extensionless `README`.

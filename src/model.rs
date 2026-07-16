@@ -225,5 +225,4 @@ impl ProcessRecord {
 #[derive(Debug, Clone)]
 pub struct RunResult {
     pub summary: RunSummary,
-    pub output: String,
 }

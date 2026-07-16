@@ -83,6 +83,19 @@ deck tasks list deck --json
 deck tui
 ```
 
+## TUI
+
+`deck tui` (or plain `deck`) opens the interactive cockpit: a filterable
+project list on the left and tabs for Summary, Commands, Workflows,
+Processes, Recent runs, and Output on the right. The Summary tab is the same
+bundle as `deck summary`; actions (run, dry-run, server start/stop, workflow
+runs, reruns) execute the deck CLI itself with output streamed live into the
+Output tab, so the TUI can do everything the CLI can:
+
+- `:` runs any deck command line (for example `:config apply deck --file setup.toml`)
+- `!` runs a shell command in the selected project's root
+- `/` filters projects, `?` shows all keys, `c` cancels the running action
+
 Run logs and scan state are stored under the XDG state directory, normally:
 
 ```text

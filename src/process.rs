@@ -58,15 +58,6 @@ fn kill_group(pid: u32) {
     }
 }
 
-pub fn run_command(
-    project: &Project,
-    command: &CommandSpec,
-    state: &mut State,
-    paths: &StatePaths,
-) -> Result<RunResult> {
-    run_command_stream(project, command, state, paths, None, |_| Ok(()))
-}
-
 pub fn run_command_stream<F>(
     project: &Project,
     command: &CommandSpec,
@@ -144,7 +135,6 @@ where
 
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let mut timed_out = false;
-    let mut output = String::new();
     loop {
         let line = match deadline {
             None => rx.recv().ok(),
@@ -173,7 +163,6 @@ where
         };
         let Some(line) = line else { break };
         on_output(&line)?;
-        output.push_str(&line);
         log.write_all(line.as_bytes())?;
     }
 
@@ -202,7 +191,6 @@ where
             finished: true,
             timed_out,
         },
-        output,
     })
 }
 
@@ -455,7 +443,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(streamed, "hello\n");
-        assert_eq!(result.output, "hello\n");
         assert_eq!(result.summary.exit_code, Some(0));
         let log = std::fs::read_to_string(result.summary.log_path).unwrap();
         assert!(log.contains("$ printf"));

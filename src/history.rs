@@ -108,7 +108,11 @@ pub fn rerun(
     crate::commands::run_project_command(&project_id, &command_name, json, dry_run, timeout_seconds)
 }
 
-fn recent_runs(runs: &[RunSummary], project_id: Option<&str>, limit: usize) -> Vec<RunSummary> {
+pub(crate) fn recent_runs(
+    runs: &[RunSummary],
+    project_id: Option<&str>,
+    limit: usize,
+) -> Vec<RunSummary> {
     runs.iter()
         .rev()
         .filter(|run| project_id.is_none_or(|project_id| run.project_id == project_id))
