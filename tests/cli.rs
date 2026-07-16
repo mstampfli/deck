@@ -500,3 +500,103 @@ fn config_apply_reads_json_from_stdin() {
     assert_eq!(json["changed"], true);
     assert_eq!(json["config"]["commands"]["fromjson"]["argv"][0], "printf");
 }
+
+#[test]
+fn scoped_scan_merges_instead_of_replacing() {
+    let state = tempfile::tempdir().unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    std::fs::write(first.path().join("deck.toml"), "name = \"alpha\"\n").unwrap();
+    std::fs::write(second.path().join("deck.toml"), "name = \"beta\"\n").unwrap();
+
+    assert_success(&deck(
+        state.path(),
+        &["scan", first.path().to_str().unwrap()],
+    ));
+    assert_success(&deck(
+        state.path(),
+        &["scan", second.path().to_str().unwrap()],
+    ));
+
+    let output = deck(state.path(), &["list", "--json"]);
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<&str> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|project| project["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"alpha"),
+        "alpha lost after scanning beta: {names:?}"
+    );
+    assert!(names.contains(&"beta"), "beta missing: {names:?}");
+
+    std::fs::remove_file(first.path().join("deck.toml")).unwrap();
+    assert_success(&deck(
+        state.path(),
+        &["scan", first.path().to_str().unwrap()],
+    ));
+    let output = deck(state.path(), &["list", "--json"]);
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let names: Vec<&str> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|project| project["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"alpha"), "alpha not pruned: {names:?}");
+    assert!(
+        names.contains(&"beta"),
+        "beta pruned by scanning first root: {names:?}"
+    );
+}
+
+#[test]
+fn git_tool_reports_non_git_projects_cleanly() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let output = deck(state.path(), &["git", "fixture", "commits"]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("fixture is not a git repository"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("status: exit status"),
+        "raw git noise: {stderr}"
+    );
+}
+
+#[test]
+fn recent_shows_project_names_and_plain_exit_codes() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+    assert_success(&deck(state.path(), &["run", "fixture", "hello"]));
+
+    let output = deck(state.path(), &["recent", "fixture"]);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("fixture"), "no project name: {stdout}");
+    assert!(stdout.contains("exit=0"), "no plain exit code: {stdout}");
+    assert!(
+        !stdout.contains("Some("),
+        "Debug formatting leaked: {stdout}"
+    );
+}

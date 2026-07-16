@@ -14,19 +14,30 @@ use crate::selection::{load_projects, select_project};
 struct RecentJson<'a> {
     ok: bool,
     project: Option<ProjectRef<'a>>,
-    runs: Vec<RunSummary>,
+    runs: Vec<RecentRunJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct RecentRunJson {
+    project_name: String,
+    #[serde(flatten)]
+    run: RunSummary,
 }
 
 impl Render for RecentJson<'_> {
     fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
-        for run in &self.runs {
+        for entry in &self.runs {
+            let exit = entry
+                .run
+                .exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string());
             writeln!(
                 out,
-                "{:<24} {:<18} exit={:?} log={}",
-                run.project_id,
-                run.command_name,
-                run.exit_code,
-                run.log_path.display()
+                "{:<24} {:<18} exit={exit:<7} log={}",
+                entry.project_name,
+                entry.run.command_name,
+                entry.run.log_path.display()
             )?;
         }
         Ok(())
@@ -42,7 +53,17 @@ pub fn recent(project_query: Option<&str>, limit: usize, json: bool) -> Result<(
         &state.runs,
         project.map(|project| project.id.as_str()),
         limit,
-    );
+    )
+    .into_iter()
+    .map(|run| RecentRunJson {
+        project_name: projects
+            .iter()
+            .find(|project| project.id == run.project_id)
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| run.project_id.clone()),
+        run,
+    })
+    .collect();
     emit(
         &RecentJson {
             ok: true,

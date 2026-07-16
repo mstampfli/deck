@@ -317,8 +317,13 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
 }
 
 fn scan(roots: &[PathBuf], json: bool) -> Result<()> {
-    let (projects, mut state, paths) = load_projects(roots)?;
-    state.update_projects(&projects);
+    let roots = roots
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect::<Vec<_>>();
+    let (projects, mut state, paths) = load_projects(&roots)?;
+    let scanned = crate::selection::effective_scan_roots(&state, &roots);
+    state.update_projects(&projects, &scanned);
     state.save(&paths)?;
     emit(
         &ScanJson {

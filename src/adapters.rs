@@ -405,7 +405,12 @@ fn parse_make_targets(raw: &str) -> Vec<String> {
                 return None;
             }
             let (target, _) = trimmed.split_once(':')?;
-            if target.contains('=') || target.contains(' ') || target.is_empty() {
+            if target.contains('=')
+                || target.contains(' ')
+                || target.is_empty()
+                || target.contains('%')
+                || target.contains('$')
+            {
                 return None;
             }
             Some(target.to_string())
@@ -413,6 +418,23 @@ fn parse_make_targets(raw: &str) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+#[cfg(test)]
+mod make_target_tests {
+    use super::parse_make_targets;
+
+    #[test]
+    fn skips_pattern_and_variable_make_targets() {
+        let raw = "all: build
+$(BIN_DIR)/%: main.go
+build:
+	go build
+%.o: %.c
+VAR=1
+";
+        assert_eq!(parse_make_targets(raw), vec!["all", "build"]);
+    }
 }
 
 fn parse_just_targets(raw: &str) -> Vec<String> {

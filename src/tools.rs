@@ -21,6 +21,9 @@ pub enum GitAction {
 }
 
 pub fn git(project: &Project, action: GitAction) -> Result<String> {
+    if !project.root.join(".git").exists() {
+        anyhow::bail!("{} is not a git repository", project.name);
+    }
     let args: &[&str] = match action {
         GitAction::Diff => &["diff", "--stat"],
         GitAction::Branches => &["branch", "--all", "--verbose"],

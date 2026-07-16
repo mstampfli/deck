@@ -315,6 +315,7 @@ dependencies = [
  "crossterm",
  "directories",
  "ignore",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

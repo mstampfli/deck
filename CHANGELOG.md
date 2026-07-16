@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Scoped `deck scan` merges into the registry instead of replacing it, so
+  scanning one directory no longer erases every other registered project;
+  projects deleted from a scanned root are still pruned.
+- Deck dies silently on a closed pipe (`deck list | head`) instead of
+  printing a broken-pipe error.
+- `deck recent` shows project names and plain exit codes instead of ids and
+  Debug-formatted options.
+- Make pattern and variable targets (`$(BIN_DIR)/%`) no longer leak into the
+  detected command list.
+- `deck git` on a project without a repository reports that plainly instead
+  of dumping raw git errors.
+
 ### Added
 
 - `deck init` is project-aware: it writes a `deck.toml` seeded with the

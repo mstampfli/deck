@@ -62,20 +62,28 @@ impl State {
             .with_context(|| format!("writing {}", paths.state_file.display()))
     }
 
-    pub fn update_projects(&mut self, projects: &[Project]) {
-        self.projects = projects
-            .iter()
-            .map(|project| {
-                (
-                    project.id.clone(),
-                    ProjectState {
-                        id: project.id.clone(),
-                        name: project.name.clone(),
-                        root: project.root.clone(),
-                    },
-                )
-            })
-            .collect();
+    /// Merge freshly scanned projects into the registry.
+    ///
+    /// Entries under any scanned root are replaced by what the scan found, so
+    /// projects deleted from those roots are pruned, while entries outside
+    /// the scanned roots are left alone: scanning one directory never erases
+    /// the rest of the registry.
+    pub fn update_projects(&mut self, projects: &[Project], scanned_roots: &[PathBuf]) {
+        self.projects.retain(|_, existing| {
+            !scanned_roots
+                .iter()
+                .any(|root| existing.root.starts_with(root))
+        });
+        for project in projects {
+            self.projects.insert(
+                project.id.clone(),
+                ProjectState {
+                    id: project.id.clone(),
+                    name: project.name.clone(),
+                    root: project.root.clone(),
+                },
+            );
+        }
     }
 
     pub fn record_run(&mut self, run: RunSummary) {

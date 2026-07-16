@@ -14,17 +14,23 @@ use crate::state::{ProcessView, State, StatePaths, state_paths};
 pub fn load_projects(roots: &[PathBuf]) -> Result<(Vec<Project>, State, StatePaths)> {
     let paths = state_paths()?;
     let state = State::load(&paths)?;
-    let scan_roots = if roots.is_empty() && !state.projects.is_empty() {
+    let scan_roots = effective_scan_roots(&state, roots);
+    let projects = discover_projects(&scan_roots, &state)?;
+    Ok((projects, state, paths))
+}
+
+/// The roots a scan actually covers: the given ones, or every registered
+/// project root when none are given.
+pub fn effective_scan_roots(state: &State, roots: &[PathBuf]) -> Vec<PathBuf> {
+    if roots.is_empty() && !state.projects.is_empty() {
         state
             .projects
             .values()
             .map(|project| project.root.clone())
-            .collect::<Vec<_>>()
+            .collect()
     } else {
         roots.to_vec()
-    };
-    let projects = discover_projects(&scan_roots, &state)?;
-    Ok((projects, state, paths))
+    }
 }
 
 pub fn select_project<'a>(projects: &'a [Project], query: &str) -> Result<&'a Project> {

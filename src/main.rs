@@ -31,5 +31,11 @@ mod tui;
 mod workflow;
 
 fn main() -> anyhow::Result<()> {
+    // Die silently on SIGPIPE like every other CLI tool, instead of
+    // surfacing a broken-pipe error when piped into head and friends.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     cli::run()
 }
