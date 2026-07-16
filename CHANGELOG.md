@@ -22,6 +22,11 @@
 
 ### Fixed
 
+- `deck stop` signals the server's whole process group, so wrappers like
+  `npm run start` no longer die while their actual server child survives.
+- Command kind inference matches whole tokens instead of substrings: `start`
+  scripts are servers by npm convention (so `deck start` can manage them),
+  while `restart` and `devtools` no longer false-match.
 - Scoped `deck scan` merges into the registry instead of replacing it, so
   scanning one directory no longer erases every other registered project;
   projects deleted from a scanned root are still pruned.

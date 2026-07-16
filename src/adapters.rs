@@ -371,7 +371,12 @@ fn config_kind_to_model(kind: ConfigCommandKind) -> CommandKind {
 
 fn inferred_command_kind(name: &str, command: &str) -> CommandKind {
     let text = format!("{name} {command}").to_ascii_lowercase();
-    if text.contains("serve") || text.contains("dev") || text.contains("watch") {
+    // Whole tokens, not substrings: "start" means a server by npm convention,
+    // but "restart" is an action, and "devtools" is not "dev".
+    let server = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| matches!(token, "serve" | "server" | "dev" | "watch" | "start"));
+    if server {
         CommandKind::Server
     } else {
         CommandKind::Once
@@ -418,6 +423,33 @@ fn parse_make_targets(raw: &str) -> Vec<String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+#[cfg(test)]
+mod command_kind_tests {
+    use super::inferred_command_kind;
+    use crate::model::CommandKind;
+
+    #[test]
+    fn start_is_a_server_but_restart_is_not() {
+        assert_eq!(
+            inferred_command_kind("start", "expo start"),
+            CommandKind::Server
+        );
+        assert_eq!(inferred_command_kind("dev", "vite"), CommandKind::Server);
+        assert_eq!(
+            inferred_command_kind("restart", "systemctl restart app"),
+            CommandKind::Once
+        );
+        assert_eq!(
+            inferred_command_kind("devtools", "open devtools"),
+            CommandKind::Once
+        );
+        assert_eq!(
+            inferred_command_kind("build", "cargo build"),
+            CommandKind::Once
+        );
+    }
 }
 
 #[cfg(test)]

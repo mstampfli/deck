@@ -745,3 +745,45 @@ fn forget_removes_registry_entries_and_flags_missing_roots() {
     let unknown = deck(state.path(), &["forget", "fixture"]);
     assert!(!unknown.status.success());
 }
+
+#[test]
+fn stop_kills_the_whole_server_tree() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("deck.toml"),
+        r#"name = "treefix"
+
+[commands.tree]
+cmd = "sleep 987.65"
+kind = "server"
+"#,
+    )
+    .unwrap();
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    assert_success(&deck(state.path(), &["start", "treefix", "tree"]));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_success(&deck(state.path(), &["stop", "treefix", "tree"]));
+
+    // The shell wrapper was the recorded pid; its sleep child must die too.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let survivors = Command::new("pgrep")
+            .args(["-f", "sleep 987.65"])
+            .output()
+            .unwrap();
+        if !survivors.status.success() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "server child survived stop: {}",
+            String::from_utf8_lossy(&survivors.stdout)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}

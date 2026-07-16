@@ -293,14 +293,35 @@ pub fn stop_process(process: &ProcessRecord) -> Result<()> {
         return Ok(());
     }
 
-    let status = Command::new("kill")
-        .arg(process.pid.to_string())
-        .status()
-        .with_context(|| format!("stopping pid {}", process.pid))?;
-    if !status.success() {
-        anyhow::bail!("kill exited with status {status}");
+    // Servers start under setsid, so the recorded pid leads its own process
+    // group: signal the whole group, or wrappers like npm die while their
+    // actual server child keeps running.
+    #[cfg(unix)]
+    {
+        let group = unsafe { libc::kill(-(process.pid as i32), libc::SIGTERM) };
+        if group != 0 {
+            let single = unsafe { libc::kill(process.pid as i32, libc::SIGTERM) };
+            if single != 0 {
+                anyhow::bail!(
+                    "stopping pid {}: {}",
+                    process.pid,
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+        Ok(())
     }
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        let status = Command::new("taskkill")
+            .args(["/PID", &process.pid.to_string(), "/T", "/F"])
+            .status()
+            .with_context(|| format!("stopping pid {}", process.pid))?;
+        if !status.success() {
+            anyhow::bail!("taskkill exited with status {status}");
+        }
+        Ok(())
+    }
 }
 
 fn command_process(command: &CommandSpec, new_session: bool) -> Result<Command> {
