@@ -1,0 +1,65 @@
+name = "deck"
+
+[commands]
+check = "cargo check"
+fmt = "cargo fmt --all"
+run = "cargo run"
+test = "cargo test"
+
+[workflows.check]
+steps = [
+    "fmt",
+    "test",
+]
+
+[plugins]
+
+[sandbox.default]
+backend = "bwrap"
+network = false
+readonly_project = true
+writable = [
+    "./target",
+    "./tmp",
+]
+env = ["PATH"]
+timeout_seconds = 300
+allow_shell = true
+
+[tasks.context-doc-files]
+title = "Context: include CLAUDE.md, AGENTS.md, ARCHITECTURE.md, CONTRIBUTING.md"
+status = "todo"
+
+[tasks.epipe-exit]
+title = "Exit quietly on broken pipes instead of printing an error"
+status = "done"
+
+[tasks.forget-project]
+title = "Add deck forget PROJECT and stale-root handling"
+status = "todo"
+
+[tasks.git-friendly-errors]
+title = "Clean message when deck git hits a non-git project"
+status = "done"
+
+[tasks.interrupted-runs]
+title = "Record interrupted runs; add run --timeout-seconds"
+status = "todo"
+
+[tasks.make-pattern-targets]
+title = "Adapters: skip make pattern and variable targets"
+status = "done"
+
+[tasks.recent-human]
+title = "Recent: show project names and plain exit codes"
+status = "done"
+
+[tasks.scan-merge]
+title = "Make scan merge into the registry instead of replacing it"
+status = "done"
+
+[tasks.summary-description]
+title = "Summary: say what the project is (README or manifest description)"
+status = "todo"
+
+[paths]
