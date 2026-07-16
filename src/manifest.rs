@@ -106,7 +106,16 @@ fn entry(command: &clap::Command, path: &[String]) -> ManifestEntry {
 }
 
 fn positional_shape(arg: &clap::Arg) -> String {
-    let mut name = value_name(arg);
+    let possible = arg.get_possible_values();
+    let mut name = if possible.is_empty() {
+        value_name(arg)
+    } else {
+        possible
+            .iter()
+            .map(|value| value.get_name().to_string())
+            .collect::<Vec<_>>()
+            .join("|")
+    };
     if arg
         .get_num_args()
         .is_some_and(|range| range.max_values() > 1)
@@ -146,6 +155,34 @@ fn value_name(arg: &clap::Arg) -> String {
         .and_then(|names| names.first())
         .map(|name| name.to_string())
         .unwrap_or_else(|| arg.get_id().to_string().to_uppercase())
+}
+
+/// One runnable command shape for the TUI palette: the command line with
+/// placeholder tokens, plus its help text.
+pub(crate) struct CommandTemplate {
+    pub line: String,
+    pub about: String,
+}
+
+/// Every leaf command as a palette template, from the same clap graph as the
+/// manifest, so the TUI cannot miss or misspell a command.
+pub(crate) fn command_templates() -> Vec<CommandTemplate> {
+    let root = built_command();
+    leaf_commands(&root)
+        .into_iter()
+        .filter(|(path, _)| path.first().is_none_or(|first| first != "tui"))
+        .map(|(path, command)| {
+            let mut parts = path.clone();
+            parts.extend(command.get_positionals().map(positional_shape));
+            CommandTemplate {
+                line: parts.join(" "),
+                about: command
+                    .get_about()
+                    .map(|about| about.to_string())
+                    .unwrap_or_default(),
+            }
+        })
+        .collect()
 }
 
 /// Output type per command path. Coverage is enforced by the unit test below:
@@ -212,6 +249,17 @@ mod tests {
             missing.is_empty(),
             "commands missing a manifest output annotation: {missing:?}"
         );
+    }
+
+    #[test]
+    fn command_templates_cover_every_leaf_except_the_tui() {
+        let templates = command_templates();
+        assert!(templates.iter().any(|t| t.line == "list"));
+        assert!(templates.iter().any(|t| t.line.starts_with("run PROJECT")));
+        assert!(templates.iter().any(|t| t.line.starts_with("git PROJECT")));
+        assert!(!templates.iter().any(|t| t.line.starts_with("tui")));
+        let root = built_command();
+        assert_eq!(templates.len(), leaf_commands(&root).len() - 1);
     }
 
     #[test]

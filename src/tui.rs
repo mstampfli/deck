@@ -13,7 +13,10 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -21,7 +24,7 @@ use crossterm::terminal::{
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::contracts::render_to_string;
@@ -39,20 +42,24 @@ pub fn run_tui() -> Result<()> {
     }
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     // Restore the terminal even if drawing panics, so a bug never leaves the
     // shell in raw mode.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         original_hook(panic);
     }));
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     let result = run_app(&mut terminal);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     let _ = std::panic::take_hook();
     result
@@ -66,13 +73,17 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<(
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if app.handle_key(key)? {
+                    break;
+                }
             }
-            if app.handle_key(key)? {
-                break;
-            }
+            Event::Mouse(mouse) => app.handle_mouse(mouse)?,
+            _ => {}
         }
     }
     Ok(())
@@ -127,6 +138,13 @@ enum BarMode {
     Shell,
 }
 
+/// The command palette: a filter query over every deck command plus the
+/// curated setup templates.
+struct Palette {
+    query: String,
+    list: ListState,
+}
+
 /// A running subprocess whose merged output streams into the Output tab.
 struct RunningAction {
     label: String,
@@ -158,8 +176,14 @@ struct App {
     content_height: u16,
     /// Active input bar: mode, buffer, and cursor position in chars.
     bar: Option<(BarMode, String, usize)>,
-    palette: Option<ListState>,
+    palette: Option<Palette>,
     show_help: bool,
+    projects_area: Rect,
+    tabs_y: u16,
+    tab_hits: Vec<(u16, u16, Tab)>,
+    content_area: Rect,
+    palette_area: Rect,
+    last_click: Option<(std::time::Instant, u16, u16)>,
     status: String,
     action: Option<RunningAction>,
 }
@@ -190,6 +214,12 @@ impl App {
             bar: None,
             palette: None,
             show_help: false,
+            projects_area: Rect::default(),
+            tabs_y: 0,
+            tab_hits: Vec::new(),
+            content_area: Rect::default(),
+            palette_area: Rect::default(),
+            last_click: None,
             status: "Tab focus  1-6 tabs  Enter act  : deck cmd  ! shell  / filter  ? help"
                 .to_string(),
             action: None,
@@ -429,9 +459,8 @@ impl App {
         }
     }
 
-    /// Setup actions offered by the palette, pre-filled for the selected
-    /// project and finished by hand in the `:` bar before running.
-    fn palette_templates(&self) -> Vec<(String, String)> {
+    /// Setup actions with curated defaults, ahead of the generated entries.
+    fn setup_templates(&self) -> Vec<(String, String)> {
         let project = self
             .selected_project()
             .map(|project| project.name.clone())
@@ -488,31 +517,82 @@ impl App {
         ]
     }
 
-    fn handle_palette_key(&mut self, key: KeyEvent) {
-        let templates = self.palette_templates().len();
-        let Some(list) = &mut self.palette else {
-            return;
+    /// Everything the palette can offer: curated setup entries first, then
+    /// every deck command from the clap graph, filtered by the query.
+    /// Each item is (label, detail, template).
+    fn palette_items(&self) -> Vec<(String, String, String)> {
+        let query = self
+            .palette
+            .as_ref()
+            .map(|palette| palette.query.to_lowercase())
+            .unwrap_or_default();
+        let mut items: Vec<(String, String, String)> = self
+            .setup_templates()
+            .into_iter()
+            .map(|(label, line)| (format!("setup: {label}"), line.clone(), line))
+            .collect();
+        items.extend(
+            crate::manifest::command_templates()
+                .into_iter()
+                .map(|template| (template.line.clone(), template.about, template.line)),
+        );
+        items.retain(|(label, detail, _)| {
+            query.is_empty()
+                || label.to_lowercase().contains(&query)
+                || detail.to_lowercase().contains(&query)
+        });
+        items
+    }
+
+    /// Run the chosen palette entry directly when every placeholder resolved,
+    /// otherwise pre-fill the bar with the cursor on the first placeholder.
+    fn choose_palette_entry(&mut self) -> Result<()> {
+        let items = self.palette_items();
+        let selected = self
+            .palette
+            .as_ref()
+            .and_then(|palette| palette.list.selected())
+            .unwrap_or(0);
+        let Some((_, _, template)) = items.into_iter().nth(selected) else {
+            self.palette = None;
+            return Ok(());
+        };
+        self.palette = None;
+        let project = self.selected_project().map(|project| project.name.clone());
+        let (line, ready) = resolve_template(&template, project.as_deref());
+        if ready {
+            let args = split_command_line(&line);
+            self.spawn_deck(args)
+        } else {
+            let cursor = first_placeholder_end(&line);
+            self.bar = Some((BarMode::DeckCommand, line, cursor));
+            self.status =
+                "edit the placeholders (arrows move the cursor), Enter runs it".to_string();
+            Ok(())
+        }
+    }
+
+    fn handle_palette_key(&mut self, key: KeyEvent) -> Result<()> {
+        let count = self.palette_items().len();
+        let Some(palette) = &mut self.palette else {
+            return Ok(());
         };
         match key.code {
             KeyCode::Esc => self.palette = None,
-            KeyCode::Up | KeyCode::Char('k') => move_list(list, templates, -1),
-            KeyCode::Down | KeyCode::Char('j') => move_list(list, templates, 1),
-            KeyCode::Enter => {
-                let selected = list.selected().unwrap_or(0);
-                let command = self
-                    .palette_templates()
-                    .into_iter()
-                    .nth(selected)
-                    .map(|(_, command)| command)
-                    .unwrap_or_default();
-                self.palette = None;
-                let cursor = command.chars().count();
-                self.bar = Some((BarMode::DeckCommand, command, cursor));
-                self.status =
-                    "edit the placeholders (arrows move the cursor), Enter runs it".to_string();
+            KeyCode::Up => move_list(&mut palette.list, count, -1),
+            KeyCode::Down => move_list(&mut palette.list, count, 1),
+            KeyCode::Enter => return self.choose_palette_entry(),
+            KeyCode::Backspace => {
+                palette.query.pop();
+                palette.list.select(Some(0));
+            }
+            KeyCode::Char(ch) => {
+                palette.query.push(ch);
+                palette.list.select(Some(0));
             }
             _ => {}
         }
+        Ok(())
     }
 
     // ----- key handling -----
@@ -524,7 +604,7 @@ impl App {
             return Ok(false);
         }
         if self.palette.is_some() {
-            self.handle_palette_key(key);
+            self.handle_palette_key(key)?;
             return Ok(false);
         }
         if self.bar.is_some() {
@@ -557,7 +637,10 @@ impl App {
             KeyCode::Char('a') => {
                 let mut list = ListState::default();
                 list.select(Some(0));
-                self.palette = Some(list);
+                self.palette = Some(Palette {
+                    query: String::new(),
+                    list,
+                });
             }
             KeyCode::Char('/') => {
                 let filter = self.filter.clone();
@@ -873,6 +956,136 @@ impl App {
         self.spawn_deck(args)
     }
 
+    // ----- mouse -----
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let double = self.register_click(mouse.column, mouse.row);
+                self.handle_click(mouse.column, mouse.row, double)
+            }
+            MouseEventKind::ScrollUp => {
+                self.handle_wheel(mouse.column, mouse.row, -1);
+                Ok(())
+            }
+            MouseEventKind::ScrollDown => {
+                self.handle_wheel(mouse.column, mouse.row, 1);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Track click position and timing; a second click on the same cell
+    /// within the double-click window activates instead of selecting.
+    fn register_click(&mut self, column: u16, row: u16) -> bool {
+        let now = std::time::Instant::now();
+        let double = self.last_click.is_some_and(|(at, last_column, last_row)| {
+            last_column == column
+                && last_row == row
+                && now.duration_since(at) < Duration::from_millis(450)
+        });
+        self.last_click = if double {
+            None
+        } else {
+            Some((now, column, row))
+        };
+        double
+    }
+
+    fn handle_click(&mut self, column: u16, row: u16, double: bool) -> Result<()> {
+        if self.show_help {
+            self.show_help = false;
+            return Ok(());
+        }
+        if self.palette.is_some() {
+            let inner = inner_rect(self.palette_area);
+            if let Some(index) = row_at(inner, column, row) {
+                let count = self.palette_items().len();
+                if let Some(palette) = &mut self.palette {
+                    let index = palette.list.offset() + index;
+                    if index < count {
+                        palette.list.select(Some(index));
+                        if double {
+                            return self.choose_palette_entry();
+                        }
+                    }
+                }
+            } else {
+                self.palette = None;
+            }
+            return Ok(());
+        }
+        if let Some(index) = row_at(inner_rect(self.projects_area), column, row) {
+            let index = self.project_list.offset() + index;
+            if index < self.visible.len() {
+                self.project_list.select(Some(index));
+                self.refresh_project_views();
+            }
+            self.zone = Zone::Projects;
+            if double {
+                self.zone = Zone::Content;
+            }
+            return Ok(());
+        }
+        if row == self.tabs_y {
+            if let Some((_, _, tab)) = self
+                .tab_hits
+                .iter()
+                .find(|(start, end, _)| column >= *start && column < *end)
+            {
+                self.tab = *tab;
+                self.zone = Zone::Content;
+            }
+            return Ok(());
+        }
+        if let Some(index) = row_at(inner_rect(self.content_area), column, row) {
+            self.zone = Zone::Content;
+            let command_len = self
+                .selected_project()
+                .map_or(0, |project| project.commands.len());
+            let workflow_len = self
+                .selected_project()
+                .map_or(0, |project| project.workflows.len());
+            let (list, len) = match self.tab {
+                Tab::Commands => (&mut self.command_list, command_len),
+                Tab::Workflows => (&mut self.workflow_list, workflow_len),
+                Tab::Processes => (&mut self.process_list, self.processes.len()),
+                Tab::Recent => (&mut self.recent_list, self.recents.len()),
+                Tab::Summary | Tab::Output => return Ok(()),
+            };
+            let index = list.offset() + index;
+            if index < len {
+                list.select(Some(index));
+                if double {
+                    return self.activate();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_wheel(&mut self, column: u16, row: u16, direction: isize) {
+        if self.palette.is_some() {
+            let count = self.palette_items().len();
+            if let Some(palette) = &mut self.palette {
+                move_list(&mut palette.list, count, direction);
+            }
+            return;
+        }
+        if rect_contains(self.projects_area, column, row) {
+            move_list(&mut self.project_list, self.visible.len(), direction);
+            self.refresh_project_views();
+            return;
+        }
+        if rect_contains(self.content_area, column, row) || row == self.tabs_y {
+            let zone = self.zone;
+            self.zone = Zone::Content;
+            self.move_selection(direction);
+            self.zone = zone;
+        }
+    }
+
     // ----- drawing -----
 
     fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -885,11 +1098,14 @@ impl App {
             .constraints([Constraint::Length(30), Constraint::Min(20)])
             .split(outer[0]);
 
+        self.projects_area = main[0];
         self.draw_projects(frame, main[0]);
         self.draw_content(frame, main[1]);
         self.draw_bottom(frame, outer[1]);
         if self.palette.is_some() {
             self.draw_palette(frame);
+        } else {
+            self.palette_area = Rect::default();
         }
         if self.show_help {
             self.draw_help(frame);
@@ -897,29 +1113,36 @@ impl App {
     }
 
     fn draw_palette(&mut self, frame: &mut Frame<'_>) {
-        let templates = self.palette_templates();
-        let height = (templates.len() as u16 + 2).min(frame.area().height);
-        let area = centered_rect(frame.area(), 74, height);
-        let items = templates
+        let items = self.palette_items();
+        let query = self
+            .palette
+            .as_ref()
+            .map(|palette| palette.query.clone())
+            .unwrap_or_default();
+        let height = (items.len() as u16 + 2).clamp(3, frame.area().height);
+        let area = centered_rect(frame.area(), 86, height);
+        self.palette_area = area;
+        let rows = items
             .into_iter()
-            .map(|(label, command)| {
+            .map(|(label, detail, _)| {
                 ListItem::new(Line::from(vec![
-                    Span::raw(format!("{label:<38}")),
-                    Span::styled(command, Style::default().fg(Color::DarkGray)),
+                    Span::raw(format!("{label:<42}")),
+                    Span::styled(detail, Style::default().fg(Color::DarkGray)),
                 ]))
             })
             .collect::<Vec<_>>();
-        let list = List::new(items)
+        let title = format!("Commands: type to filter [{query}] (Enter or double-click runs)");
+        let list = List::new(rows)
             .block(
                 Block::default()
-                    .title("Add / setup (Enter pre-fills the : bar)")
+                    .title(title)
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Cyan)),
             )
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         frame.render_widget(Clear, area);
-        if let Some(state) = &mut self.palette {
-            frame.render_stateful_widget(list, area, state);
+        if let Some(palette) = &mut self.palette {
+            frame.render_stateful_widget(list, area, &mut palette.list);
         }
     }
 
@@ -965,15 +1188,34 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(2)])
             .split(area);
-        let titles = Tab::ALL.iter().map(|tab| Line::from(tab.title()));
-        let tabs = Tabs::new(titles).select(self.tab.index()).highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-        frame.render_widget(tabs, chunks[0]);
+        // Render the tab titles by hand so each one has an exact hit box for
+        // mouse clicks.
+        self.tabs_y = chunks[0].y;
+        self.tab_hits.clear();
+        let mut spans = Vec::new();
+        let mut x = chunks[0].x;
+        for (position, tab) in Tab::ALL.iter().enumerate() {
+            if position > 0 {
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                x += 3;
+            }
+            let title = tab.title();
+            let width = title.len() as u16;
+            let style = if *tab == self.tab {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(title, style));
+            self.tab_hits.push((x, x + width, *tab));
+            x += width;
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), chunks[0]);
 
         let pane = chunks[1];
+        self.content_area = pane;
         self.content_height = pane.height.saturating_sub(2);
         match self.tab {
             Tab::Summary => {
@@ -1195,7 +1437,10 @@ deck TUI
   s            start/stop the selected server or process
   l            open the selected log (Processes, Recent)
   r            rerun the selected recent run
-  a            open the setup palette (init, commands, sandboxes, tasks)
+  a            command palette: every deck command; type to filter,
+               Enter/double-click runs (placeholders open the : bar)
+  mouse        click selects, double-click runs, wheel scrolls,
+               click a tab title to switch
   /            filter projects (Esc clears)
   :            run any deck command line (e.g. :summary deck)
   !            run a shell command in the project root
@@ -1251,6 +1496,86 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     }
+}
+
+/// Substitute the selected project into a command template and strip
+/// unfilled optional tokens. Returns the resolved line and whether every
+/// placeholder resolved (ready to run without editing).
+fn resolve_template(template: &str, project: Option<&str>) -> (String, bool) {
+    let mut parts = Vec::new();
+    let mut ready = true;
+    for token in template.split_whitespace() {
+        let optional = token.starts_with('[');
+        let core = token
+            .trim_matches(|ch| ch == '[' || ch == ']')
+            .trim_end_matches("..");
+        let placeholder = is_placeholder(core);
+        if placeholder && core.contains("PROJECT") {
+            match project {
+                Some(project) => parts.push(project.to_string()),
+                None if optional => {}
+                None => {
+                    parts.push(core.to_string());
+                    ready = false;
+                }
+            }
+        } else if placeholder {
+            if !optional {
+                parts.push(core.to_string());
+                ready = false;
+            }
+        } else {
+            parts.push(token.to_string());
+        }
+    }
+    (parts.join(" "), ready)
+}
+
+/// A token is a placeholder when it is shouting (NAME, COMMAND) or offers a
+/// fixed choice set (diff|branches|commits).
+fn is_placeholder(token: &str) -> bool {
+    if token.contains('|') {
+        return true;
+    }
+    token.chars().any(|ch| ch.is_ascii_uppercase())
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch == '.')
+}
+
+/// Cursor position for editing: the end of the first unresolved placeholder,
+/// so Backspace immediately replaces it.
+fn first_placeholder_end(line: &str) -> usize {
+    let mut chars = 0;
+    for token in line.split(' ') {
+        let core = token
+            .trim_matches(|ch| ch == '[' || ch == ']')
+            .trim_end_matches("..");
+        if is_placeholder(core) || token.contains('|') {
+            return chars + token.chars().count();
+        }
+        chars += token.chars().count() + 1;
+    }
+    line.chars().count()
+}
+
+/// The area inside a bordered block.
+fn inner_rect(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
+}
+
+fn rect_contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
+}
+
+/// Which visible row (0-based) of a bordered list a click landed on.
+fn row_at(inner: Rect, column: u16, row: u16) -> Option<usize> {
+    rect_contains(inner, column, row).then(|| (row - inner.y) as usize)
 }
 
 /// Byte offset of the `cursor`-th character in `text`.
@@ -1324,6 +1649,38 @@ mod tests {
             split_command_line(r#"run deck ''"#),
             vec!["run", "deck", ""]
         );
+    }
+
+    #[test]
+    fn resolves_templates_against_the_selected_project() {
+        assert_eq!(resolve_template("list", Some("x")), ("list".into(), true));
+        assert_eq!(
+            resolve_template("run PROJECT COMMAND", Some("deck")),
+            ("run deck COMMAND".into(), false)
+        );
+        assert_eq!(
+            resolve_template("ps [PROJECT]", Some("deck")),
+            ("ps deck".into(), true)
+        );
+        assert_eq!(
+            resolve_template("scan [ROOTS..]", None),
+            ("scan".into(), true)
+        );
+        assert_eq!(
+            resolve_template("git PROJECT diff|branches|commits", Some("p")),
+            ("git p diff|branches|commits".into(), false)
+        );
+        assert_eq!(
+            resolve_template("forget PROJECT", None),
+            ("forget PROJECT".into(), false)
+        );
+    }
+
+    #[test]
+    fn cursor_lands_on_the_first_placeholder() {
+        assert_eq!(first_placeholder_end("run deck COMMAND"), 16);
+        assert_eq!(first_placeholder_end("tasks add deck NAME --title T"), 19);
+        assert_eq!(first_placeholder_end("list"), 4);
     }
 
     #[test]
