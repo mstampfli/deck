@@ -8,8 +8,12 @@
   Summary, Commands, Workflows, Processes, Recent, and Output tabs; live
   streamed command output with cancel; server start/stop; dry runs; log
   viewing; reruns; a `:` bar that accepts any deck command line; and a `!`
-  shell in the project root. Actions run the deck binary itself, so TUI and
-  CLI cannot drift. The TUI refuses to start without an interactive
+  shell in the project root. A setup palette (`a`) pre-fills the `:` bar
+  with editable templates for init, commands, workflows, sandbox profiles,
+  plugins, tasks, document apply, and forget, and the bar supports full
+  cursor editing. Deck commands from the bar run in the selected project's
+  root, so `:init` configures the project under the cursor. Actions run the
+  deck binary itself, so TUI and CLI cannot drift. The TUI refuses to start without an interactive
   terminal and restores the terminal even on panic.
 - Context bundles include the agent-facing doc files: `ARCHITECTURE.md`
   (also under `docs/`), `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, and

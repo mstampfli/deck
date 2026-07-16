@@ -156,7 +156,9 @@ struct App {
     output_scroll: usize,
     output_follow: bool,
     content_height: u16,
-    bar: Option<(BarMode, String)>,
+    /// Active input bar: mode, buffer, and cursor position in chars.
+    bar: Option<(BarMode, String, usize)>,
+    palette: Option<ListState>,
     show_help: bool,
     status: String,
     action: Option<RunningAction>,
@@ -186,6 +188,7 @@ impl App {
             output_follow: true,
             content_height: 0,
             bar: None,
+            palette: None,
             show_help: false,
             status: "Tab focus  1-6 tabs  Enter act  : deck cmd  ! shell  / filter  ? help"
                 .to_string(),
@@ -293,6 +296,11 @@ impl App {
         let label = format!("deck {}", args.join(" "));
         let mut command = Command::new(exe);
         command.args(&args);
+        // Run in the selected project's root so cwd-dependent commands like
+        // `:init` act on the project instead of wherever the TUI started.
+        if let Some(project) = self.selected_project() {
+            command.current_dir(&project.root);
+        }
         self.spawn_action(command, label)
     }
 
@@ -421,12 +429,102 @@ impl App {
         }
     }
 
+    /// Setup actions offered by the palette, pre-filled for the selected
+    /// project and finished by hand in the `:` bar before running.
+    fn palette_templates(&self) -> Vec<(String, String)> {
+        let project = self
+            .selected_project()
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| "PROJECT".to_string());
+        vec![
+            (
+                "init this project (writes deck.toml)".to_string(),
+                "init --sandbox test".to_string(),
+            ),
+            (
+                "add a command".to_string(),
+                format!("config add-command {project} NAME --cmd \"CMD\""),
+            ),
+            (
+                "add an argv command (sandbox-safe)".to_string(),
+                format!("config add-argv-command {project} NAME --arg PROG --arg ARG"),
+            ),
+            (
+                "add a server command".to_string(),
+                format!(
+                    "config add-command {project} NAME --cmd \"CMD\" --kind server --port 3000"
+                ),
+            ),
+            (
+                "add a workflow".to_string(),
+                format!("config add-workflow {project} NAME --step fmt --step test"),
+            ),
+            (
+                "add a sandbox profile (locked preset)".to_string(),
+                format!("config add-sandbox {project} default --preset locked"),
+            ),
+            (
+                "add a sandbox profile (custom)".to_string(),
+                format!(
+                    "config add-sandbox {project} NAME --network false --readonly-project true --writable ./target --env PATH"
+                ),
+            ),
+            (
+                "add a plugin".to_string(),
+                format!("config add-plugin {project} NAME --cmd \"CMD\""),
+            ),
+            (
+                "add a task".to_string(),
+                format!("tasks add {project} NAME --title \"TITLE\""),
+            ),
+            (
+                "apply a whole config document".to_string(),
+                format!("config apply {project} --file setup.toml"),
+            ),
+            (
+                "forget this project (files untouched)".to_string(),
+                format!("forget {project}"),
+            ),
+        ]
+    }
+
+    fn handle_palette_key(&mut self, key: KeyEvent) {
+        let templates = self.palette_templates().len();
+        let Some(list) = &mut self.palette else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.palette = None,
+            KeyCode::Up | KeyCode::Char('k') => move_list(list, templates, -1),
+            KeyCode::Down | KeyCode::Char('j') => move_list(list, templates, 1),
+            KeyCode::Enter => {
+                let selected = list.selected().unwrap_or(0);
+                let command = self
+                    .palette_templates()
+                    .into_iter()
+                    .nth(selected)
+                    .map(|(_, command)| command)
+                    .unwrap_or_default();
+                self.palette = None;
+                let cursor = command.chars().count();
+                self.bar = Some((BarMode::DeckCommand, command, cursor));
+                self.status =
+                    "edit the placeholders (arrows move the cursor), Enter runs it".to_string();
+            }
+            _ => {}
+        }
+    }
+
     // ----- key handling -----
 
     /// Returns true when the app should quit.
     fn handle_key(&mut self, key: KeyEvent) -> Result<bool> {
         if self.show_help {
             self.show_help = false;
+            return Ok(false);
+        }
+        if self.palette.is_some() {
+            self.handle_palette_key(key);
             return Ok(false);
         }
         if self.bar.is_some() {
@@ -456,9 +554,18 @@ impl App {
             }
             KeyCode::Left | KeyCode::Char('[') => self.cycle_tab(-1),
             KeyCode::Right | KeyCode::Char(']') => self.cycle_tab(1),
-            KeyCode::Char('/') => self.bar = Some((BarMode::Filter, self.filter.clone())),
-            KeyCode::Char(':') => self.bar = Some((BarMode::DeckCommand, String::new())),
-            KeyCode::Char('!') => self.bar = Some((BarMode::Shell, String::new())),
+            KeyCode::Char('a') => {
+                let mut list = ListState::default();
+                list.select(Some(0));
+                self.palette = Some(list);
+            }
+            KeyCode::Char('/') => {
+                let filter = self.filter.clone();
+                let cursor = filter.chars().count();
+                self.bar = Some((BarMode::Filter, filter, cursor));
+            }
+            KeyCode::Char(':') => self.bar = Some((BarMode::DeckCommand, String::new(), 0)),
+            KeyCode::Char('!') => self.bar = Some((BarMode::Shell, String::new(), 0)),
             KeyCode::Char('R') => {
                 self.reload()?;
                 self.status = "reloaded".to_string();
@@ -482,9 +589,10 @@ impl App {
     }
 
     fn handle_bar_key(&mut self, key: KeyEvent) -> Result<()> {
-        let Some((mode, buffer)) = &mut self.bar else {
+        let Some((mode, buffer, cursor)) = &mut self.bar else {
             return Ok(());
         };
+        let mut changed = false;
         match key.code {
             KeyCode::Esc => {
                 if *mode == BarMode::Filter {
@@ -492,6 +600,7 @@ impl App {
                     self.apply_filter();
                 }
                 self.bar = None;
+                return Ok(());
             }
             KeyCode::Enter => {
                 let mode = *mode;
@@ -515,22 +624,34 @@ impl App {
                         }
                     }
                 }
+                return Ok(());
             }
-            KeyCode::Backspace => {
-                buffer.pop();
-                if *mode == BarMode::Filter {
-                    self.filter = buffer.clone();
-                    self.apply_filter();
-                }
+            KeyCode::Left => *cursor = cursor.saturating_sub(1),
+            KeyCode::Right => *cursor = (*cursor + 1).min(buffer.chars().count()),
+            KeyCode::Home => *cursor = 0,
+            KeyCode::End => *cursor = buffer.chars().count(),
+            KeyCode::Backspace if *cursor > 0 => {
+                let byte = char_to_byte(buffer, *cursor - 1);
+                buffer.remove(byte);
+                *cursor -= 1;
+                changed = true;
+            }
+            KeyCode::Delete if *cursor < buffer.chars().count() => {
+                let byte = char_to_byte(buffer, *cursor);
+                buffer.remove(byte);
+                changed = true;
             }
             KeyCode::Char(ch) => {
-                buffer.push(ch);
-                if *mode == BarMode::Filter {
-                    self.filter = buffer.clone();
-                    self.apply_filter();
-                }
+                let byte = char_to_byte(buffer, *cursor);
+                buffer.insert(byte, ch);
+                *cursor += 1;
+                changed = true;
             }
             _ => {}
+        }
+        if changed && *mode == BarMode::Filter {
+            self.filter = buffer.clone();
+            self.apply_filter();
         }
         Ok(())
     }
@@ -767,8 +888,38 @@ impl App {
         self.draw_projects(frame, main[0]);
         self.draw_content(frame, main[1]);
         self.draw_bottom(frame, outer[1]);
+        if self.palette.is_some() {
+            self.draw_palette(frame);
+        }
         if self.show_help {
             self.draw_help(frame);
+        }
+    }
+
+    fn draw_palette(&mut self, frame: &mut Frame<'_>) {
+        let templates = self.palette_templates();
+        let height = (templates.len() as u16 + 2).min(frame.area().height);
+        let area = centered_rect(frame.area(), 74, height);
+        let items = templates
+            .into_iter()
+            .map(|(label, command)| {
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{label:<38}")),
+                    Span::styled(command, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .title("Add / setup (Enter pre-fills the : bar)")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        frame.render_widget(Clear, area);
+        if let Some(state) = &mut self.palette {
+            frame.render_stateful_widget(list, area, state);
         }
     }
 
@@ -1011,9 +1162,15 @@ impl App {
 
     fn draw_bottom(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let line = match &self.bar {
-            Some((BarMode::Filter, buffer)) => format!("/{buffer}_"),
-            Some((BarMode::DeckCommand, buffer)) => format!(":deck {buffer}_"),
-            Some((BarMode::Shell, buffer)) => format!("!{buffer}_"),
+            Some((mode, buffer, cursor)) => {
+                let prefix = match mode {
+                    BarMode::Filter => "/",
+                    BarMode::DeckCommand => ":deck ",
+                    BarMode::Shell => "!",
+                };
+                let byte = char_to_byte(buffer, *cursor);
+                format!("{prefix}{}\u{2588}{}", &buffer[..byte], &buffer[byte..])
+            }
             None => self.status.clone(),
         };
         let style = if self.bar.is_some() {
@@ -1038,6 +1195,7 @@ deck TUI
   s            start/stop the selected server or process
   l            open the selected log (Processes, Recent)
   r            rerun the selected recent run
+  a            open the setup palette (init, commands, sandboxes, tasks)
   /            filter projects (Esc clears)
   :            run any deck command line (e.g. :summary deck)
   !            run a shell command in the project root
@@ -1093,6 +1251,14 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     }
+}
+
+/// Byte offset of the `cursor`-th character in `text`.
+fn char_to_byte(text: &str, cursor: usize) -> usize {
+    text.char_indices()
+        .nth(cursor)
+        .map(|(byte, _)| byte)
+        .unwrap_or(text.len())
 }
 
 fn spawn_line_reader<R: io::Read + Send + 'static>(reader: R, tx: Sender<String>) {
@@ -1158,6 +1324,14 @@ mod tests {
             split_command_line(r#"run deck ''"#),
             vec!["run", "deck", ""]
         );
+    }
+
+    #[test]
+    fn char_to_byte_handles_multibyte_text() {
+        assert_eq!(char_to_byte("abc", 0), 0);
+        assert_eq!(char_to_byte("abc", 2), 2);
+        assert_eq!(char_to_byte("abc", 9), 3);
+        assert_eq!(char_to_byte("a\u{e4}c", 2), 3);
     }
 
     #[test]

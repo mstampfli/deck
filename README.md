@@ -92,7 +92,12 @@ bundle as `deck summary`; actions (run, dry-run, server start/stop, workflow
 runs, reruns) execute the deck CLI itself with output streamed live into the
 Output tab, so the TUI can do everything the CLI can:
 
-- `:` runs any deck command line (for example `:config apply deck --file setup.toml`)
+- `a` opens the setup palette: init, add commands/workflows/sandboxes/plugins/
+  tasks, apply a document, forget; picking an entry pre-fills the `:` bar for
+  editing (arrow keys move the cursor)
+- `:` runs any deck command line in the selected project's root (for example
+  `:config apply deck --file setup.toml`, or `:init --sandbox locked` on a
+  fresh project)
 - `!` runs a shell command in the selected project's root
 - `/` filters projects, `?` shows all keys, `c` cancels the running action
 
