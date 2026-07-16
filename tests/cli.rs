@@ -708,8 +708,28 @@ fn forget_removes_registry_entries_and_flags_missing_roots() {
         &["scan", project.path().to_str().unwrap()],
     ));
 
-    // A running tracked process blocks forgetting.
+    // A running tracked process blocks forgetting. Spawning returns before
+    // the child is observable in /proc, so wait until deck sees it alive.
     assert_success(&deck(state.path(), &["start", "fixture", "svc"]));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let output = deck(state.path(), &["ps", "fixture", "--json"]);
+        assert_success(&output);
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        if json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|process| process["alive"] == true)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "svc never became alive"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     let refused = deck(state.path(), &["forget", "fixture"]);
     assert!(!refused.status.success());
     let stderr = String::from_utf8_lossy(&refused.stderr);
