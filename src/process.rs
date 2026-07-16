@@ -147,10 +147,7 @@ where
     let mut output = String::new();
     loop {
         let line = match deadline {
-            None => match rx.recv() {
-                Ok(line) => Some(line),
-                Err(_) => None,
-            },
+            None => rx.recv().ok(),
             Some(deadline) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() && !timed_out {
