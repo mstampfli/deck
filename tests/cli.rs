@@ -34,6 +34,13 @@ cmd = "printf hello"
 [commands.fail]
 argv = ["false"]
 
+[commands.slow]
+argv = ["sleep", "5"]
+
+[commands.svc]
+cmd = "sleep 30"
+kind = "server"
+
 [sandbox.locked]
 backend = "bwrap"
 network = false
@@ -599,4 +606,142 @@ fn recent_shows_project_names_and_plain_exit_codes() {
         !stdout.contains("Some("),
         "Debug formatting leaked: {stdout}"
     );
+}
+
+#[test]
+fn run_timeout_kills_the_command_and_records_it() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let output = deck(
+        state.path(),
+        &["run", "fixture", "slow", "--timeout-seconds", "1", "--json"],
+    );
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["timed_out"], true);
+
+    let recent = deck(state.path(), &["recent", "fixture"]);
+    assert_success(&recent);
+    let stdout = String::from_utf8_lossy(&recent.stdout);
+    assert!(
+        stdout.contains("exit=timeout"),
+        "unexpected recent: {stdout}"
+    );
+}
+
+#[test]
+fn interrupted_runs_stay_visible_in_recent() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deck"))
+        .args(["run", "fixture", "slow"])
+        .env("XDG_STATE_HOME", state.path())
+        .env("XDG_DATA_HOME", state.path().join("data"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Wait until the pending run record lands in state.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let output = deck(state.path(), &["recent", "fixture", "--json"]);
+        if output.status.success() {
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            if json["runs"]
+                .as_array()
+                .is_some_and(|runs| runs.iter().any(|run| run["finished"] == false))
+            {
+                break;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pending run never appeared"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Kill deck without giving it a chance to finalize, like a crash would.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGKILL);
+    }
+    child.wait().unwrap();
+
+    // Once the orphaned sleep exits, the run must read as interrupted.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let output = deck(state.path(), &["recent", "fixture"]);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("exit=interrupted") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run never became interrupted: {stdout}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn forget_removes_registry_entries_and_flags_missing_roots() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    fixture_project(project.path());
+    assert_success(&deck(
+        state.path(),
+        &["scan", project.path().to_str().unwrap()],
+    ));
+
+    // A running tracked process blocks forgetting.
+    assert_success(&deck(state.path(), &["start", "fixture", "svc"]));
+    let refused = deck(state.path(), &["forget", "fixture"]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("still has a running process"), "{stderr}");
+    assert_success(&deck(state.path(), &["stop", "fixture", "svc"]));
+
+    // A missing root is still listed, marked, and forgettable.
+    std::fs::remove_dir_all(project.path()).unwrap();
+    let list = deck(state.path(), &["list"]);
+    assert_success(&list);
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(stdout.contains("fixture"), "{stdout}");
+    assert!(stdout.contains("(missing)"), "{stdout}");
+
+    let output = deck(state.path(), &["forget", "fixture", "--json"]);
+    assert_success(&output);
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["name"], "fixture");
+
+    let list = deck(state.path(), &["list", "--json"]);
+    assert_success(&list);
+    let json: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert!(
+        !json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "fixture"),
+        "fixture still listed after forget"
+    );
+
+    let unknown = deck(state.path(), &["forget", "fixture"]);
+    assert!(!unknown.status.success());
 }

@@ -188,6 +188,7 @@ fn output_type(path: &str) -> Option<&'static str> {
         | "config add-sandbox"
         | "config remove-sandbox" => "ConfigEditJson",
         "recent" => "RecentJson",
+        "forget" => "ForgetJson",
         "init" => "InitJson",
         "clear-runs" => "ClearRunsJson",
         "tui" => "none (interactive TUI)",

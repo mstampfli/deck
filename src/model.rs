@@ -171,6 +171,36 @@ pub struct RunSummary {
     pub finished_at: DateTime<Utc>,
     pub exit_code: Option<i32>,
     pub log_path: PathBuf,
+    /// Pid of the spawned command, for liveness checks on unfinished runs.
+    #[serde(default)]
+    pub pid: Option<u32>,
+    /// False while the run is in flight; stays false if Deck dies mid-run.
+    #[serde(default = "default_run_finished")]
+    pub finished: bool,
+    #[serde(default)]
+    pub timed_out: bool,
+}
+
+/// Records written before these fields existed are all completed runs.
+fn default_run_finished() -> bool {
+    true
+}
+
+impl RunSummary {
+    /// Human label for how the run ended: an exit code, "signal", "timeout",
+    /// or "interrupted" for a run that was never finalized.
+    pub fn exit_label(&self) -> String {
+        if self.timed_out {
+            return "timeout".to_string();
+        }
+        if !self.finished {
+            return "interrupted".to_string();
+        }
+        match self.exit_code {
+            Some(code) => code.to_string(),
+            None => "signal".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

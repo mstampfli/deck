@@ -50,9 +50,9 @@ where
         }
 
         on_output(&format!("==> {}:{}\n", workflow.name, step))?;
-        let result = run_command_stream(project, command, paths, |line| on_output(line))?;
+        let result =
+            run_command_stream(project, command, state, paths, None, |line| on_output(line))?;
         let exit_code = result.summary.exit_code;
-        state.record_run(result.summary.clone());
         completed_steps.push(result.summary);
         if exit_code != Some(0) {
             return Ok(WorkflowRunResult {

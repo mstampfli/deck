@@ -6,8 +6,10 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -16,18 +18,61 @@ use crate::model::{CommandKind, CommandSpec, ProcessRecord, Project, RunResult, 
 use crate::state::State;
 use crate::state::{StatePaths, ensure_dir};
 
+/// Process group of the currently running one-shot command, for the signal
+/// forwarder. Zero when nothing is running.
+static ONESHOT_PGID: AtomicI32 = AtomicI32::new(0);
+
+/// Forward a fatal signal to the running command's process group, then
+/// re-raise it with the default action so Deck dies with the right status.
+/// Everything called here is async-signal-safe.
+#[cfg(unix)]
+extern "C" fn forward_signal(signal: libc::c_int) {
+    let pgid = ONESHOT_PGID.load(Ordering::SeqCst);
+    if pgid > 0 {
+        unsafe {
+            libc::kill(-pgid, signal);
+        }
+    }
+    unsafe {
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+}
+
+#[cfg(unix)]
+fn install_signal_forwarding() {
+    use std::sync::Once;
+    static INSTALL: Once = Once::new();
+    let handler = forward_signal as *const () as libc::sighandler_t;
+    INSTALL.call_once(|| unsafe {
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGHUP, handler);
+    });
+}
+
+#[cfg(unix)]
+fn kill_group(pid: u32) {
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+}
+
 pub fn run_command(
     project: &Project,
     command: &CommandSpec,
+    state: &mut State,
     paths: &StatePaths,
 ) -> Result<RunResult> {
-    run_command_stream(project, command, paths, |_| Ok(()))
+    run_command_stream(project, command, state, paths, None, |_| Ok(()))
 }
 
 pub fn run_command_stream<F>(
     project: &Project,
     command: &CommandSpec,
+    state: &mut State,
     paths: &StatePaths,
+    timeout: Option<Duration>,
     mut on_output: F,
 ) -> Result<RunResult>
 where
@@ -59,12 +104,37 @@ where
     writeln!(log, "cwd: {}", command.cwd.display())?;
     writeln!(log)?;
 
-    let mut child = command_process(command, false)?
+    let mut process = command_process(command, false)?;
+    process
         .current_dir(&command.cwd)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Run the command in its own process group so a timeout or a fatal
+    // signal to Deck takes the whole command tree down with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        process.process_group(0);
+        install_signal_forwarding();
+    }
+    let mut child = process
         .spawn()
         .with_context(|| format!("spawning {}", command.command))?;
+    ONESHOT_PGID.store(child.id() as i32, Ordering::SeqCst);
+
+    state.begin_run(RunSummary {
+        project_id: project.id.clone(),
+        command_name: command.name.clone(),
+        command: command.command.clone(),
+        started_at,
+        finished_at: started_at,
+        exit_code: None,
+        log_path: log_path.clone(),
+        pid: Some(child.id()),
+        finished: false,
+        timed_out: false,
+    });
+    state.save(paths)?;
 
     let stdout = child.stdout.take().context("capturing stdout")?;
     let stderr = child.stderr.take().context("capturing stderr")?;
@@ -72,17 +142,55 @@ where
     spawn_reader(stdout, tx.clone());
     spawn_reader(stderr, tx);
 
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let mut timed_out = false;
     let mut output = String::new();
-    for line in rx {
+    loop {
+        let line = match deadline {
+            None => match rx.recv() {
+                Ok(line) => Some(line),
+                Err(_) => None,
+            },
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() && !timed_out {
+                    timed_out = true;
+                    kill_command(&mut child);
+                    continue;
+                }
+                match rx.recv_timeout(if timed_out {
+                    Duration::from_secs(5)
+                } else {
+                    remaining
+                }) {
+                    Ok(line) => Some(line),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if timed_out {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => None,
+                }
+            }
+        };
+        let Some(line) = line else { break };
         on_output(&line)?;
         output.push_str(&line);
         log.write_all(line.as_bytes())?;
     }
 
     let status = child.wait().context("waiting for command")?;
+    ONESHOT_PGID.store(0, Ordering::SeqCst);
     let finished_at = Utc::now();
     writeln!(log)?;
+    if timed_out {
+        writeln!(log, "timed out")?;
+    }
     writeln!(log, "exit: {:?}", status.code())?;
+
+    state.finalize_run(&log_path, status.code(), finished_at, timed_out);
+    state.save(paths)?;
 
     Ok(RunResult {
         summary: RunSummary {
@@ -93,9 +201,19 @@ where
             finished_at,
             exit_code: status.code(),
             log_path,
+            pid: Some(child.id()),
+            finished: true,
+            timed_out,
         },
         output,
     })
+}
+
+fn kill_command(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    kill_group(child.id());
+    #[cfg(not(unix))]
+    let _ = child.kill();
 }
 
 pub fn start_process(
@@ -306,12 +424,13 @@ mod tests {
             unavailable_reason: None,
         };
         let paths = StatePaths {
-            state_file: PathBuf::from("unused"),
+            state_file: temp.path().join("state.toml"),
             runs_dir: temp.path().join("runs"),
         };
+        let mut state = State::default();
         let mut streamed = String::new();
 
-        let result = run_command_stream(&project, &command, &paths, |line| {
+        let result = run_command_stream(&project, &command, &mut state, &paths, None, |line| {
             streamed.push_str(line);
             Ok(())
         })

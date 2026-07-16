@@ -50,6 +50,9 @@ enum Command {
         command: String,
         #[arg(long)]
         dry_run: bool,
+        /// Kill the command tree and record a timeout after this many seconds
+        #[arg(long)]
+        timeout_seconds: Option<u64>,
     },
     /// Start a server command in the background
     Start { project: String, command: String },
@@ -132,7 +135,12 @@ enum Command {
         command: Option<String>,
         #[arg(long)]
         dry_run: bool,
+        /// Kill the command tree and record a timeout after this many seconds
+        #[arg(long)]
+        timeout_seconds: Option<u64>,
     },
+    /// Remove a project from the registry (files are untouched)
+    Forget { project: String },
     /// Edit a project's deck.toml: commands, workflows, plugins, sandbox profiles
     Config {
         #[command(subcommand)]
@@ -258,7 +266,10 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
             project,
             command,
             dry_run,
-        } => crate::commands::run_project_command(&project, &command, json, dry_run),
+            timeout_seconds,
+        } => {
+            crate::commands::run_project_command(&project, &command, json, dry_run, timeout_seconds)
+        }
         Command::Start { project, command } => start_project_command(&project, &command, json),
         Command::Stop { project, command } => stop_project_command(&project, &command, json),
         Command::Restart { project, command } => restart_project_command(&project, &command, json),
@@ -293,7 +304,15 @@ fn dispatch(command: Command, json: bool) -> Result<()> {
             project,
             command,
             dry_run,
-        } => crate::history::rerun(project.as_deref(), command.as_deref(), json, dry_run),
+            timeout_seconds,
+        } => crate::history::rerun(
+            project.as_deref(),
+            command.as_deref(),
+            json,
+            dry_run,
+            timeout_seconds,
+        ),
+        Command::Forget { project } => crate::commands::forget(&project, json),
         Command::Config { action } => crate::config_edit::run(action, json),
         Command::Tui => {
             if json {

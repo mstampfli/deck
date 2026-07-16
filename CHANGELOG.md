@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- Context bundles include the agent-facing doc files: `ARCHITECTURE.md`
+  (also under `docs/`), `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, and
+  extensionless `README`.
+- Context and summary answer "what is this project": a description resolved
+  from `Cargo.toml`, `package.json`, or the README's first prose paragraph.
+- Runs are recorded when they start, so a run interrupted by a crash or kill
+  stays visible; `deck recent` distinguishes running, interrupted, timed
+  out, and signal-terminated runs.
+- `deck run --timeout-seconds` (also on `rerun`) kills the whole command
+  tree on expiry and records the timeout. One-shot commands now run in
+  their own process group, and Deck forwards fatal signals to it, so
+  killing Deck no longer orphans the command.
+- `deck forget PROJECT` removes a registry entry (refusing while a tracked
+  process is running), and `deck list` marks entries whose root no longer
+  exists instead of hiding them.
+
 ### Fixed
 
 - Scoped `deck scan` merges into the registry instead of replacing it, so

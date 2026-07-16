@@ -54,8 +54,10 @@ cargo doc --no-deps
 ```sh
 deck scan ~/
 deck list
+deck forget old-project
 deck commands deck
 deck run deck check
+deck run deck test --timeout-seconds 300
 deck start my-project serve
 deck ps
 deck stop my-project serve
@@ -352,9 +354,11 @@ deck plugin run PROJECT NAME ACTION
 ## Context Bundles
 
 Context bundles are deterministic project snapshots for agents and external
-tools. They include project metadata, git status, commands, workflows, plugins,
-tasks, command safety metadata, processes, recent runs, and bounded snippets of
-key project files.
+tools. They include project metadata, a resolved project description, git
+status, commands, workflows, plugins, tasks, command safety metadata,
+processes, recent runs, and bounded snippets of key project files, including
+the agent-facing docs (`README`, `ARCHITECTURE.md`, `CLAUDE.md`, `AGENTS.md`,
+`CONTRIBUTING.md`).
 
 ```sh
 deck context PROJECT

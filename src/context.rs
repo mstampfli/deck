@@ -31,6 +31,12 @@ const CONTEXT_FILES: &[&str] = &[
     "compose.yml",
     "compose.yaml",
     "README.md",
+    "README",
+    "ARCHITECTURE.md",
+    "docs/ARCHITECTURE.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +60,10 @@ pub struct ContextProject {
     pub name: String,
     pub root: PathBuf,
     pub kinds: Vec<String>,
+    /// One-line answer to "what is this project", from the manifest
+    /// description or the README's first paragraph.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +107,7 @@ pub fn build_context(project: &Project, state: &State) -> Result<ContextBundle> 
                 .iter()
                 .map(|kind| kind.label().to_string())
                 .collect(),
+            description: project_description(&project.root),
         },
         git: project.git.clone(),
         commands: project.commands.clone(),
@@ -120,6 +131,9 @@ pub fn build_context(project: &Project, state: &State) -> Result<ContextBundle> 
 pub fn render_markdown(bundle: &ContextBundle) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Deck Context: {}\n\n", bundle.project.name));
+    if let Some(description) = &bundle.project.description {
+        out.push_str(&format!("{description}\n\n"));
+    }
     out.push_str(&format!("- generated_at: `{}`\n", bundle.generated_at));
     out.push_str(&format!("- root: `{}`\n", bundle.project.root.display()));
     out.push_str(&format!("- kinds: `{}`\n", bundle.project.kinds.join(", ")));
@@ -241,6 +255,71 @@ pub fn render_markdown(bundle: &ContextBundle) -> String {
     out
 }
 
+const MAX_DESCRIPTION_CHARS: usize = 240;
+
+/// Resolve a one-line project description: curated manifest fields first
+/// (Cargo.toml, package.json), then the README's first prose paragraph.
+pub fn project_description(root: &Path) -> Option<String> {
+    cargo_description(root)
+        .or_else(|| package_json_description(root))
+        .or_else(|| readme_description(root))
+}
+
+fn cargo_description(root: &Path) -> Option<String> {
+    let raw = fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&raw).ok()?;
+    let description = value.get("package")?.get("description")?.as_str()?;
+    normalized_description(description)
+}
+
+fn package_json_description(root: &Path) -> Option<String> {
+    let raw = fs::read_to_string(root.join("package.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    normalized_description(value.get("description")?.as_str()?)
+}
+
+fn readme_description(root: &Path) -> Option<String> {
+    let raw = ["README.md", "README"]
+        .iter()
+        .find_map(|name| fs::read_to_string(root.join(name)).ok())?;
+    let mut paragraph: Vec<&str> = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if paragraph.is_empty() {
+                continue;
+            }
+            break;
+        }
+        // Skip headings, badges, images, HTML, and horizontal rules until
+        // the first real prose paragraph.
+        if paragraph.is_empty()
+            && (trimmed.starts_with('#')
+                || trimmed.starts_with("![")
+                || trimmed.starts_with("[!")
+                || trimmed.starts_with('<')
+                || trimmed.starts_with("---")
+                || trimmed.starts_with("==="))
+        {
+            continue;
+        }
+        paragraph.push(trimmed);
+    }
+    normalized_description(&paragraph.join(" "))
+}
+
+fn normalized_description(raw: &str) -> Option<String> {
+    let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_DESCRIPTION_CHARS {
+        return Some(text);
+    }
+    let truncated: String = text.chars().take(MAX_DESCRIPTION_CHARS).collect();
+    Some(format!("{}...", truncated.trim_end()))
+}
+
 fn recent_runs(project: &Project, state: &State, limit: usize) -> Vec<RunSummary> {
     state
         .runs
@@ -314,6 +393,56 @@ mod tests {
         assert_eq!(bundle.project.name, "fixture");
         assert_eq!(bundle.files.len(), 2);
         assert!(render_markdown(&bundle).contains("# Deck Context: fixture"));
+    }
+
+    #[test]
+    fn description_prefers_manifest_over_readme() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\ndescription = \"A tiny cockpit\"\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("README.md"), "# X\n\nProse here.\n").unwrap();
+
+        assert_eq!(
+            project_description(temp.path()).as_deref(),
+            Some("A tiny cockpit")
+        );
+    }
+
+    #[test]
+    fn description_falls_back_to_readme_prose() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("README.md"),
+            "# Title\n\n![badge](x.svg)\n\nDoes one thing\nwell.\n\nMore text.\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            project_description(temp.path()).as_deref(),
+            Some("Does one thing well.")
+        );
+    }
+
+    #[test]
+    fn context_includes_agent_doc_files() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("deck.toml"), "name = \"fixture\"\n").unwrap();
+        fs::write(temp.path().join("CLAUDE.md"), "agent notes\n").unwrap();
+        fs::write(temp.path().join("ARCHITECTURE.md"), "theory\n").unwrap();
+        let project = fixture_project(temp.path().to_path_buf());
+
+        let bundle = build_context(&project, &State::default()).unwrap();
+        let names: Vec<String> = bundle
+            .files
+            .iter()
+            .map(|file| file.path.display().to_string())
+            .collect();
+
+        assert!(names.contains(&"CLAUDE.md".to_string()), "{names:?}");
+        assert!(names.contains(&"ARCHITECTURE.md".to_string()), "{names:?}");
     }
 
     #[test]

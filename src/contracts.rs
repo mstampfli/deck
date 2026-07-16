@@ -40,6 +40,9 @@ pub struct ProjectListItem<'a> {
     pub name: &'a str,
     pub root: &'a PathBuf,
     pub kinds: Vec<&'static str>,
+    /// True for a registry entry whose root no longer exists on disk.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
 }
 
 impl Render for Vec<ProjectListItem<'_>> {
@@ -47,11 +50,12 @@ impl Render for Vec<ProjectListItem<'_>> {
         for project in self {
             writeln!(
                 out,
-                "{:<18} {:<24} {:<20} {}",
+                "{:<18} {:<24} {:<20} {}{}",
                 project.id,
                 project.name,
                 project.kinds.join(","),
-                project.root.display()
+                project.root.display(),
+                if project.missing { "  (missing)" } else { "" }
             )?;
         }
         Ok(())
@@ -210,19 +214,45 @@ pub struct RunJson<'a> {
     pub project: ProjectRef<'a>,
     pub command: &'a str,
     pub exit_code: Option<i32>,
+    pub timed_out: bool,
     pub log_path: &'a PathBuf,
 }
 
 impl Render for RunJson<'_> {
     fn human(&self, out: &mut dyn io::Write) -> io::Result<()> {
         writeln!(out, "log: {}", self.log_path.display())?;
-        if !self.ok {
+        if self.timed_out {
+            writeln!(out, "command {} timed out", self.command)?;
+        } else if !self.ok {
             match self.exit_code {
                 Some(code) => {
                     writeln!(out, "command {} failed with exit code {code}", self.command)?
                 }
                 None => writeln!(out, "command {} was terminated by a signal", self.command)?,
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ForgetJson {
+    pub ok: bool,
+    pub id: String,
+    pub name: String,
+    pub root: PathBuf,
+    pub removed_process_records: usize,
+}
+
+impl Render for ForgetJson {
+    fn human(&self, out: &mut dyn io::Write) -> io::Result<()> {
+        writeln!(out, "forgot {} ({})", self.name, self.root.display())?;
+        if self.removed_process_records > 0 {
+            writeln!(
+                out,
+                "dropped {} stopped process records",
+                self.removed_process_records
+            )?;
         }
         Ok(())
     }
@@ -509,6 +539,7 @@ pub fn project_list_item(project: &Project) -> ProjectListItem<'_> {
         name: &project.name,
         root: &project.root,
         kinds: project.kinds.iter().map(|kind| kind.label()).collect(),
+        missing: false,
     }
 }
 

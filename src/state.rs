@@ -86,10 +86,32 @@ impl State {
         }
     }
 
-    pub fn record_run(&mut self, run: RunSummary) {
+    /// Record a run the moment it starts, so interrupted runs stay visible.
+    pub fn begin_run(&mut self, run: RunSummary) {
         self.runs.push(run);
         if self.runs.len() > 200 {
             self.runs.drain(0..self.runs.len() - 200);
+        }
+    }
+
+    /// Mark the run identified by its unique log path as completed.
+    pub fn finalize_run(
+        &mut self,
+        log_path: &Path,
+        exit_code: Option<i32>,
+        finished_at: chrono::DateTime<chrono::Utc>,
+        timed_out: bool,
+    ) {
+        if let Some(run) = self
+            .runs
+            .iter_mut()
+            .rev()
+            .find(|run| run.log_path == log_path)
+        {
+            run.exit_code = exit_code;
+            run.finished_at = finished_at;
+            run.finished = true;
+            run.timed_out = timed_out;
         }
     }
 
@@ -190,14 +212,21 @@ pub struct ProcessView {
 }
 
 pub fn is_process_alive(process: &ProcessRecord) -> bool {
-    process.is_marked_running() && process_command_line_matches(process)
+    process.is_marked_running() && pid_runs_command(process.pid, &process.command)
 }
 
-fn process_command_line_matches(process: &ProcessRecord) -> bool {
-    let Some(command_line) = process_command_line(process.pid) else {
+/// Whether `pid` is alive and still executing `command` (not a recycled pid).
+pub fn pid_runs_command(pid: u32, command: &str) -> bool {
+    let Some(command_line) = process_command_line(pid) else {
         return false;
     };
-    command_matches_process_line(&process.command, &command_line)
+    command_matches_process_line(command, &command_line)
+}
+
+/// Whether an unfinished run's process is still alive.
+pub fn is_run_alive(run: &RunSummary) -> bool {
+    run.pid
+        .is_some_and(|pid| pid_runs_command(pid, &run.command))
 }
 
 fn process_command_line(pid: u32) -> Option<String> {

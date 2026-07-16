@@ -27,11 +27,11 @@ struct RecentRunJson {
 impl Render for RecentJson<'_> {
     fn human(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
         for entry in &self.runs {
-            let exit = entry
-                .run
-                .exit_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "signal".to_string());
+            let exit = if !entry.run.finished && crate::state::is_run_alive(&entry.run) {
+                "running".to_string()
+            } else {
+                entry.run.exit_label()
+            };
             writeln!(
                 out,
                 "{:<24} {:<18} exit={exit:<7} log={}",
@@ -79,6 +79,7 @@ pub fn rerun(
     command_query: Option<&str>,
     json: bool,
     dry_run: bool,
+    timeout_seconds: Option<u64>,
 ) -> Result<()> {
     let (projects, state, _) = load_projects(&[])?;
     let (project_id, command_name) = match (project_query, command_query) {
@@ -104,7 +105,7 @@ pub fn rerun(
         }
         (None, Some(_)) => unreachable!("clap positional ordering prevents this shape"),
     };
-    crate::commands::run_project_command(&project_id, &command_name, json, dry_run)
+    crate::commands::run_project_command(&project_id, &command_name, json, dry_run, timeout_seconds)
 }
 
 fn recent_runs(runs: &[RunSummary], project_id: Option<&str>, limit: usize) -> Vec<RunSummary> {
@@ -131,6 +132,9 @@ mod tests {
             finished_at: Utc::now(),
             exit_code: Some(0),
             log_path: PathBuf::from("unused"),
+            pid: None,
+            finished: true,
+            timed_out: false,
         }
     }
 

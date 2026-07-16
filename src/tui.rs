@@ -353,11 +353,9 @@ impl App {
             return self.toggle_server(project, command);
         }
 
-        match run_command(&project, &command, &self.paths) {
+        match run_command(&project, &command, &mut self.state, &self.paths) {
             Ok(result) => {
                 self.output = result.output;
-                self.state.record_run(result.summary);
-                self.state.save(&self.paths)?;
                 self.reload()?;
             }
             Err(error) => {

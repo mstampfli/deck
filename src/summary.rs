@@ -89,6 +89,9 @@ impl Render for SummaryJson<'_> {
             self.project.root.display(),
             bundle.project.kinds.join(", ")
         )?;
+        if let Some(description) = &bundle.project.description {
+            writeln!(out, "{description}")?;
+        }
         match &bundle.git {
             Some(git) => writeln!(
                 out,
@@ -191,10 +194,7 @@ impl Render for SummaryJson<'_> {
             writeln!(out, "  none")?;
         }
         for run in &bundle.recent_runs {
-            let exit = run
-                .exit_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "signal".to_string());
+            let exit = run.exit_label();
             writeln!(
                 out,
                 "  {:<18} exit={} {}",

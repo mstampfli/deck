@@ -28,7 +28,7 @@ allow_shell = true
 
 [tasks.context-doc-files]
 title = "Context: include CLAUDE.md, AGENTS.md, ARCHITECTURE.md, CONTRIBUTING.md"
-status = "todo"
+status = "done"
 
 [tasks.epipe-exit]
 title = "Exit quietly on broken pipes instead of printing an error"
@@ -36,7 +36,7 @@ status = "done"
 
 [tasks.forget-project]
 title = "Add deck forget PROJECT and stale-root handling"
-status = "todo"
+status = "done"
 
 [tasks.git-friendly-errors]
 title = "Clean message when deck git hits a non-git project"
@@ -44,7 +44,7 @@ status = "done"
 
 [tasks.interrupted-runs]
 title = "Record interrupted runs; add run --timeout-seconds"
-status = "todo"
+status = "done"
 
 [tasks.make-pattern-targets]
 title = "Adapters: skip make pattern and variable targets"
@@ -60,6 +60,6 @@ status = "done"
 
 [tasks.summary-description]
 title = "Summary: say what the project is (README or manifest description)"
-status = "todo"
+status = "done"
 
 [paths]
