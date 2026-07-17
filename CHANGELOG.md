@@ -8,9 +8,10 @@
   Summary, Commands, Workflows, Processes, Recent, and Output tabs; live
   streamed command output with cancel; server start/stop; dry runs; log
   viewing; reruns; a `:` bar that accepts any deck command line; and a `!`
-  shell in the project root. The command palette (`a`) lists every deck
-  command, generated from the CLI definition, plus curated setup templates;
-  type to filter, Enter or double-click runs. Entries whose placeholders
+  shell in the project root. A dedicated Deck tab permanently lists every
+  deck command, generated from the CLI definition, plus curated setup
+  templates; the palette (`a`) offers the same list with type-to-filter.
+  Enter or double-click runs. Entries whose placeholders
   all resolve run immediately, the rest pre-fill the `:` bar with the
   cursor on the first placeholder, and the bar supports full cursor
   editing. The mouse works throughout: click selects projects, rows, and

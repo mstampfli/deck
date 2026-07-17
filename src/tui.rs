@@ -102,16 +102,18 @@ enum Tab {
     Workflows,
     Processes,
     Recent,
+    Deck,
     Output,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [
+    const ALL: [Tab; 7] = [
         Tab::Summary,
         Tab::Commands,
         Tab::Workflows,
         Tab::Processes,
         Tab::Recent,
+        Tab::Deck,
         Tab::Output,
     ];
 
@@ -122,7 +124,8 @@ impl Tab {
             Tab::Workflows => "3 Workflows",
             Tab::Processes => "4 Processes",
             Tab::Recent => "5 Recent",
-            Tab::Output => "6 Output",
+            Tab::Deck => "6 Deck",
+            Tab::Output => "7 Output",
         }
     }
 
@@ -165,6 +168,9 @@ struct App {
     workflow_list: ListState,
     process_list: ListState,
     recent_list: ListState,
+    deck_list: ListState,
+    /// Deck's own command templates, generated once from the clap graph.
+    command_templates: Vec<(String, String)>,
     /// Cached processes for the selected project, rebuilt per selection.
     processes: Vec<ProcessView>,
     recents: Vec<crate::model::RunSummary>,
@@ -203,6 +209,15 @@ impl App {
             workflow_list: ListState::default(),
             process_list: ListState::default(),
             recent_list: ListState::default(),
+            deck_list: {
+                let mut list = ListState::default();
+                list.select(Some(0));
+                list
+            },
+            command_templates: crate::manifest::command_templates()
+                .into_iter()
+                .map(|template| (template.line, template.about))
+                .collect(),
             processes: Vec::new(),
             recents: Vec::new(),
             summary_cache: None,
@@ -220,8 +235,7 @@ impl App {
             content_area: Rect::default(),
             palette_area: Rect::default(),
             last_click: None,
-            status: "Tab focus  1-6 tabs  Enter act  : deck cmd  ! shell  / filter  ? help"
-                .to_string(),
+            status: "6 = all deck commands  Enter/double-click runs  a filters  ? help".to_string(),
             action: None,
         };
         app.apply_filter();
@@ -517,25 +531,31 @@ impl App {
         ]
     }
 
-    /// Everything the palette can offer: curated setup entries first, then
-    /// every deck command from the clap graph, filtered by the query.
-    /// Each item is (label, detail, template).
-    fn palette_items(&self) -> Vec<(String, String, String)> {
-        let query = self
-            .palette
-            .as_ref()
-            .map(|palette| palette.query.to_lowercase())
-            .unwrap_or_default();
+    /// Every deck command plus the curated setup entries, as
+    /// (label, detail, template). The same list backs the Deck tab and the
+    /// palette, so the two views cannot diverge.
+    fn all_command_items(&self) -> Vec<(String, String, String)> {
         let mut items: Vec<(String, String, String)> = self
             .setup_templates()
             .into_iter()
             .map(|(label, line)| (format!("setup: {label}"), line.clone(), line))
             .collect();
         items.extend(
-            crate::manifest::command_templates()
-                .into_iter()
-                .map(|template| (template.line.clone(), template.about, template.line)),
+            self.command_templates
+                .iter()
+                .map(|(line, about)| (line.clone(), about.clone(), line.clone())),
         );
+        items
+    }
+
+    /// The palette view: all command items filtered by the typed query.
+    fn palette_items(&self) -> Vec<(String, String, String)> {
+        let query = self
+            .palette
+            .as_ref()
+            .map(|palette| palette.query.to_lowercase())
+            .unwrap_or_default();
+        let mut items = self.all_command_items();
         items.retain(|(label, detail, _)| {
             query.is_empty()
                 || label.to_lowercase().contains(&query)
@@ -553,11 +573,17 @@ impl App {
             .as_ref()
             .and_then(|palette| palette.list.selected())
             .unwrap_or(0);
+        self.palette = None;
         let Some((_, _, template)) = items.into_iter().nth(selected) else {
-            self.palette = None;
             return Ok(());
         };
-        self.palette = None;
+        self.execute_template(template)
+    }
+
+    /// Execute a command template: run it directly when every placeholder
+    /// resolved against the selected project, otherwise open the bar with the
+    /// cursor on the first placeholder.
+    fn execute_template(&mut self, template: String) -> Result<()> {
         let project = self.selected_project().map(|project| project.name.clone());
         let (line, ready) = resolve_template(&template, project.as_deref());
         if ready {
@@ -628,7 +654,7 @@ impl App {
                     Zone::Content => Zone::Projects,
                 };
             }
-            KeyCode::Char(digit @ '1'..='6') => {
+            KeyCode::Char(digit @ '1'..='7') => {
                 self.tab = Tab::ALL[digit as usize - '1' as usize];
                 self.zone = Zone::Content;
             }
@@ -769,6 +795,10 @@ impl App {
                     move_list(&mut self.process_list, self.processes.len(), direction)
                 }
                 Tab::Recent => move_list(&mut self.recent_list, self.recents.len(), direction),
+                Tab::Deck => {
+                    let len = self.all_command_items().len();
+                    move_list(&mut self.deck_list, len, direction);
+                }
                 Tab::Summary => {
                     self.summary_scroll = scroll_by(self.summary_scroll, direction);
                 }
@@ -843,6 +873,17 @@ impl App {
             Tab::Recent => {
                 self.open_selected_log();
                 Ok(())
+            }
+            Tab::Deck => {
+                let items = self.all_command_items();
+                let Some((_, _, template)) = self
+                    .deck_list
+                    .selected()
+                    .and_then(|index| items.into_iter().nth(index))
+                else {
+                    return Ok(());
+                };
+                self.execute_template(template)
             }
             _ => Ok(()),
         }
@@ -1047,11 +1088,13 @@ impl App {
             let workflow_len = self
                 .selected_project()
                 .map_or(0, |project| project.workflows.len());
+            let deck_len = self.all_command_items().len();
             let (list, len) = match self.tab {
                 Tab::Commands => (&mut self.command_list, command_len),
                 Tab::Workflows => (&mut self.workflow_list, workflow_len),
                 Tab::Processes => (&mut self.process_list, self.processes.len()),
                 Tab::Recent => (&mut self.recent_list, self.recents.len()),
+                Tab::Deck => (&mut self.deck_list, deck_len),
                 Tab::Summary | Tab::Output => return Ok(()),
             };
             let index = list.offset() + index;
@@ -1233,6 +1276,7 @@ impl App {
             Tab::Workflows => self.draw_workflows(frame, pane),
             Tab::Processes => self.draw_processes(frame, pane),
             Tab::Recent => self.draw_recent(frame, pane),
+            Tab::Deck => self.draw_deck(frame, pane),
             Tab::Output => self.draw_output(frame, pane),
         }
     }
@@ -1377,6 +1421,26 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.recent_list);
     }
 
+    fn draw_deck(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let rows = self
+            .all_command_items()
+            .into_iter()
+            .map(|(label, detail, _)| {
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("{label:<44}")),
+                    Span::styled(detail, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let list = List::new(rows)
+            .block(focus_block(
+                "Deck commands (Enter/double-click runs, a filters)".to_string(),
+                self.zone == Zone::Content,
+            ))
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        frame.render_stateful_widget(list, area, &mut self.deck_list);
+    }
+
     fn draw_output(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let height = area.height.saturating_sub(2) as usize;
         let max = self.output.len().saturating_sub(height.max(1));
@@ -1437,8 +1501,8 @@ deck TUI
   s            start/stop the selected server or process
   l            open the selected log (Processes, Recent)
   r            rerun the selected recent run
-  a            command palette: every deck command; type to filter,
-               Enter/double-click runs (placeholders open the : bar)
+  6            the Deck tab: every deck command, Enter/double-click runs
+  a            the same list as a filterable palette (type to narrow)
   mouse        click selects, double-click runs, wheel scrolls,
                click a tab title to switch
   /            filter projects (Esc clears)
